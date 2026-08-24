@@ -130,16 +130,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case " ", "space", "x":
 			if len(m.rows) > 0 {
-				m.rows[m.cursor].ticked = !m.rows[m.cursor].ticked
+				rows := append([]row(nil), m.rows...)
+				rows[m.cursor].ticked = !rows[m.cursor].ticked
+				m.rows = rows
 			}
 		case "a":
-			for i := range m.rows {
-				m.rows[i].ticked = true
+			rows := append([]row(nil), m.rows...)
+			for i := range rows {
+				rows[i].ticked = true
 			}
+			m.rows = rows
 		case "n":
-			for i := range m.rows {
-				m.rows[i].ticked = false
+			rows := append([]row(nil), m.rows...)
+			for i := range rows {
+				rows[i].ticked = false
 			}
+			m.rows = rows
 		}
 	}
 	return m, nil
@@ -173,7 +179,7 @@ func (m Model) View() string {
 		if r.ticked {
 			box = "[x]"
 		}
-		line := fmt.Sprintf("%s %-32s %s", box, r.repo.Rel, describe(r.repo))
+		line := fmt.Sprintf("%s %-32s %s", box, r.repo.Rel, describe(r.repo, r.section))
 		if i == m.cursor {
 			b.WriteString(selectedStyle.Render("> "+line) + "\n")
 		} else {
@@ -189,7 +195,14 @@ func (m Model) View() string {
 // describe is the right-hand metadata column. The remote leads it: syncing
 // happens through the remote, so "which remote" is the first thing that
 // decides whether ticking this repo will do anything.
-func describe(r scan.Repo) string {
+//
+// A MISSING row has no remote populated at all - not because it lacks one,
+// but because it was not found on disk this scan, so it is special-cased
+// before the remote-based logic below can produce a misleading message.
+func describe(r scan.Repo, sec section) string {
+	if sec == sectionMissing {
+		return dimStyle.Render("not found on disk")
+	}
 	if !r.CanSync() {
 		return warnStyle.Render("no remote - cannot sync")
 	}

@@ -197,6 +197,35 @@ func TestARepoWithNoRemoteIsFlagged(t *testing.T) {
 	}
 }
 
+func TestSnapshotsAreIndependentAfterUpdate(t *testing.T) {
+	// Model is a value type; Update must not mutate the backing array shared
+	// with a saved copy, or "independent snapshot" semantics silently break.
+	m1 := sized(picker.New(found("notes", "work/api"), nil))
+	m2 := m1
+	m1 = apply(t, m1, "space")
+
+	if got := m1.Selected(); len(got) != 1 || got[0] != "notes" {
+		t.Errorf("m1.Selected() = %v, want [notes]", got)
+	}
+	if got := m2.Selected(); len(got) != 0 {
+		t.Errorf("m2.Selected() = %v, want unaffected by m1's toggle", got)
+	}
+}
+
+func TestMissingRowSaysNotFoundNotNoRemote(t *testing.T) {
+	// A MISSING row has no remote data at all (that info is not in the
+	// selected []string param), so it must not be blamed on a missing
+	// remote - the real reason is it wasn't found on disk this scan.
+	m := sized(picker.New(found("notes"), []string{"notes", "work/gone"}))
+	view := m.View()
+	if strings.Contains(view, "no remote") {
+		t.Errorf("MISSING row should not say 'no remote':\n%s", view)
+	}
+	if !strings.Contains(view, "not found on disk") {
+		t.Errorf("MISSING row should say it wasn't found on disk:\n%s", view)
+	}
+}
+
 func TestEmptyScanDoesNotPanic(t *testing.T) {
 	m := sized(picker.New(nil, nil))
 	if view := m.View(); !strings.Contains(view, "No git repos") {
