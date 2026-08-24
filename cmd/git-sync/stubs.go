@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
@@ -18,6 +19,7 @@ import (
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/gitcmd"
 	"github.com/grillermo/git-sync/internal/picker"
+	"github.com/grillermo/git-sync/internal/report"
 	"github.com/grillermo/git-sync/internal/scan"
 	"github.com/grillermo/git-sync/internal/secret"
 	"github.com/grillermo/git-sync/internal/setup"
@@ -278,7 +280,41 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func cmdReport(args []string, stdout, stderr io.Writer) int { return 1 }
+func cmdReport(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	since := fs.Duration("since", 0, "only show activity newer than this (e.g. 24h)")
+	repo := fs.String("repo", "", "only show repos whose path contains this")
+	problems := fs.Bool("errors", false, "only show warnings and errors")
+	plain := fs.Bool("plain", false, "force static output even on a terminal")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	events, err := activity.Read()
+	if err != nil {
+		fmt.Fprintln(stderr, "reading activity log:", err)
+		return 1
+	}
+	opts := report.Options{Repo: *repo, ProblemsOnly: *problems}
+	if *since > 0 {
+		opts.Since = time.Now().Add(-*since)
+	}
+	summaries := report.Summarize(report.Filter(events, opts))
+
+	// Static output when piped, so the report stays greppable and scriptable.
+	interactive := !*plain && isTTY(stdout)
+	if !interactive {
+		report.WritePlain(stdout, summaries)
+		return 0
+	}
+
+	if _, err := tea.NewProgram(report.NewModel(summaries), tea.WithAltScreen()).Run(); err != nil {
+		fmt.Fprintln(stderr, "report:", err)
+		return 1
+	}
+	return 0
+}
 
 func cmdHook(args []string, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "post-commit" {
