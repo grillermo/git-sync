@@ -92,13 +92,15 @@ func (sb *Sandbox) MakeRepoNamedRemote(rel, remote string) string {
 	return work
 }
 
-// AddRemote creates a second bare repo (a clone of rel's origin) and adds it
-// to repoDir under name. Returns the bare repo's path.
+// AddRemote creates a second bare repo (a clone of repoDir's current state)
+// and adds it to repoDir under name. Returns the bare repo's path. originRel
+// only names the new bare repo's path under remotes/, keeping it distinct
+// from rel's own origin.
 func (sb *Sandbox) AddRemote(t *testing.T, repoDir, name, originRel string) string {
 	t.Helper()
 	bare := filepath.Join(sb.Home, "remotes", originRel+"-"+name+".git")
 	MkdirAll(t, filepath.Dir(bare))
-	sb.Git(sb.Home, "clone", "-q", "--bare", filepath.Join(sb.Home, "remotes", originRel+".git"), bare)
+	sb.Git(sb.Home, "clone", "-q", "--bare", repoDir, bare)
 	sb.Git(repoDir, "remote", "add", name, bare)
 	return bare
 }
@@ -231,8 +233,22 @@ func SaveConfigWithRepos(t *testing.T, sb *Sandbox, peerHost, peerUser string, r
 	}
 }
 
-// TODO(task 2): once callers need remote-name fixtures, add
-// SaveConfigWithRemotes here.
+// SaveConfigWithRemotes writes a valid config.toml pointed at sb.BaseDir, with
+// every repo currently under it selected (as SaveConfig does) plus an
+// explicit remote-name preference list.
+func SaveConfigWithRemotes(t *testing.T, sb *Sandbox, peerHost, peerUser string, remoteNames []string) {
+	t.Helper()
+	cfg := config.Config{
+		BaseDir:     sb.BaseDir,
+		PeerHost:    peerHost,
+		PeerUser:    peerUser,
+		Repos:       discoverRepos(t, sb),
+		RemoteNames: remoteNames,
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("SaveConfigWithRemotes: %v", err)
+	}
+}
 
 // discoverRepos scans sb.BaseDir for directories containing a .git entry and
 // returns their paths relative to sb.BaseDir.

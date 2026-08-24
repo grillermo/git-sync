@@ -36,7 +36,14 @@ func cmdHook(args []string, stderr io.Writer) int {
 	return 0
 }
 
-func cmdPush(args []string, stderr io.Writer) int    { return 1 }
+func cmdPush(args []string, stderr io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "usage: git-sync push <repo>")
+		return 2
+	}
+	return syncer.Push(args[0])
+}
+
 func cmdReceive(args []string, stderr io.Writer) int { return 1 }
 
 func cmdAskpass(args []string, stdout, stderr io.Writer) int           { return 1 }
