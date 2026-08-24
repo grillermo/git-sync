@@ -116,17 +116,48 @@ func TestSummarizeTracksLastMsgFromNewestEvent(t *testing.T) {
 	}
 }
 
+// Three events in shuffled order, not two: with two, merely reversing the input
+// would pass and prove nothing about sorting.
 func TestSummarizeKeepsEventsNewestFirst(t *testing.T) {
 	events := []activity.Event{
 		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("a/one", activity.OpPush, activity.StatusOK, 9),
 		ev("a/one", activity.OpPush, activity.StatusOK, 5),
 	}
 	s := report.Summarize(events)[0]
-	if len(s.Events) != 2 {
-		t.Fatalf("got %d events, want 2", len(s.Events))
+	if len(s.Events) != 3 {
+		t.Fatalf("got %d events, want 3", len(s.Events))
 	}
-	if s.Events[0].Time.Minute() != 5 {
-		t.Error("per-repo history should read newest first")
+	want := []int{9, 5, 1}
+	for i, w := range want {
+		if got := s.Events[i].Time.Minute(); got != w {
+			t.Errorf("Events[%d] = 12:%02d, want 12:%02d: history should read newest first", i, got, w)
+		}
+	}
+}
+
+// Summary is a value, and callers copy values freely - a bubbletea Update
+// returns a copied model on every keystroke. If Events came out carrying spare
+// capacity, two copies appending would each write index len(Events) of the same
+// backing array and the second would silently clobber the first. That is the
+// aliasing bug 7f8146a fixed in the picker; this pins it shut here.
+func TestSummarizeEventsDoNotAliasAcrossSummaryCopies(t *testing.T) {
+	events := []activity.Event{
+		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("a/one", activity.OpPush, activity.StatusOK, 9),
+		ev("a/one", activity.OpPush, activity.StatusOK, 5),
+	}
+	s := report.Summarize(events)[0]
+
+	a, b := s, s
+	a.Events = append(a.Events, ev("a/one", activity.OpPush, activity.StatusOK, 11))
+	b.Events = append(b.Events, ev("a/one", activity.OpPush, activity.StatusOK, 22))
+
+	if got := a.Events[len(a.Events)-1].Msg; got != "a/one@11" {
+		t.Errorf("copy a's appended event = %q, want %q: the copies share a backing array", got, "a/one@11")
+	}
+	if got := b.Events[len(b.Events)-1].Msg; got != "a/one@22" {
+		t.Errorf("copy b's appended event = %q, want %q", got, "a/one@22")
 	}
 }
 

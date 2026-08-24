@@ -89,9 +89,18 @@ func Summarize(events []activity.Event) []Summary {
 	out := make([]Summary, 0, len(byRepo))
 	for _, s := range byRepo {
 		// Newest first within a repo: the timeline reads top-down as history.
+		// Stable, not sort.Slice: LastMsg is set under a strict After, so among
+		// events sharing a timestamp the first-encountered wins. Stability keeps
+		// that same event at Events[0], which is what makes LastMsg and
+		// Events[0].Msg agree.
 		sort.SliceStable(s.Events, func(i, j int) bool {
 			return s.Events[i].Time.After(s.Events[j].Time)
 		})
+		// Clip to length so a later append by any holder reallocates. Summary is
+		// a value callers copy freely, and two copies appending into shared spare
+		// capacity would each write the same index - the second silently
+		// clobbering the first.
+		s.Events = s.Events[:len(s.Events):len(s.Events)]
 		out = append(out, *s)
 	}
 	// Ranging a map yields repos in random order, so ties must break on the
