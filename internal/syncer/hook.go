@@ -3,6 +3,7 @@
 package syncer
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +26,13 @@ type Spawner func(rel string) error
 func Hook(dir string, spawn Spawner) error {
 	cfg, err := config.Load()
 	if err != nil {
-		// Not installed, or mid-uninstall. Silently do nothing.
+		if !config.IsNotInstalled(err) {
+			// A genuinely unexpected failure - permission error, disk issue,
+			// or a corrupt hand-edited config.toml - not the ordinary "not
+			// installed" case. Trace it so it's not invisible, but still
+			// never break the commit.
+			activity.AppendDebug(fmt.Sprintf("hook: config.Load: %v", err))
+		}
 		return nil
 	}
 

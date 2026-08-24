@@ -97,6 +97,31 @@ func TestHookIsANoOpWhenNotInstalled(t *testing.T) {
 	}
 }
 
+func TestHookTracesACorruptConfig(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	// A hand-edited config.toml with a typo: invalid TOML, not a missing file.
+	if err := os.WriteFile(config.Path(), []byte("base_dir = [not valid toml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	spawned := false
+	if err := syncer.Hook(repo, func(string) error { spawned = true; return nil }); err != nil {
+		t.Fatalf("a corrupt config must not break commits: %v", err)
+	}
+	if spawned {
+		t.Error("should not spawn with a corrupt config")
+	}
+
+	b, err := os.ReadFile(config.DebugLogPath())
+	if err != nil {
+		t.Fatalf("reading debug log: %v", err)
+	}
+	if len(b) == 0 {
+		t.Error("expected the corrupt config failure to be traced in debug.log, got nothing")
+	}
+}
+
 func TestSpawnDetachedReturnsImmediately(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
