@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/grillermo/git-sync/internal/activity"
+	"github.com/grillermo/git-sync/internal/config"
 )
 
 // Sandbox is an isolated fake machine: its own HOME, GITSYNC_HOME, git global
@@ -208,8 +209,58 @@ func WriteScript(t *testing.T, sb *Sandbox, name, body string) string {
 	return path
 }
 
-// TODO(task 2): once callers need config.toml fixtures, add SaveConfig,
-// SaveConfigWithRepos, SaveConfigWithRemotes here.
+// SaveConfig writes a valid config.toml pointed at sb.BaseDir, with every
+// repo currently under it selected (found by scanning for ".git" dirs).
+func SaveConfig(t *testing.T, sb *Sandbox, peerHost, peerUser string) {
+	t.Helper()
+	SaveConfigWithRepos(t, sb, peerHost, peerUser, discoverRepos(t, sb))
+}
+
+// SaveConfigWithRepos writes a valid config.toml pointed at sb.BaseDir, with
+// repos as the explicit allowlist.
+func SaveConfigWithRepos(t *testing.T, sb *Sandbox, peerHost, peerUser string, repos []string) {
+	t.Helper()
+	cfg := config.Config{
+		BaseDir:  sb.BaseDir,
+		PeerHost: peerHost,
+		PeerUser: peerUser,
+		Repos:    repos,
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+}
+
+// TODO(task 2): once callers need remote-name fixtures, add
+// SaveConfigWithRemotes here.
+
+// discoverRepos scans sb.BaseDir for directories containing a .git entry and
+// returns their paths relative to sb.BaseDir.
+func discoverRepos(t *testing.T, sb *Sandbox) []string {
+	t.Helper()
+	var repos []string
+	err := filepath.WalkDir(sb.BaseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
+			rel, relErr := filepath.Rel(sb.BaseDir, path)
+			if relErr != nil {
+				return relErr
+			}
+			repos = append(repos, filepath.ToSlash(rel))
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("discoverRepos: %v", err)
+	}
+	return repos
+}
 
 // AssertEvent fails the test unless activity.Read() contains an event with
 // the given op, status and a Msg containing msgSubstr ("" matches any msg).
