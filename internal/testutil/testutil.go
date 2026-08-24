@@ -116,11 +116,15 @@ func (sb *Sandbox) PeerClone(rel string) string {
 }
 
 // PeerCommit makes and pushes a commit from the peer clone: "the other machine
-// committed something".
+// committed something". Writes to PEER.md rather than README.md so a peer
+// commit never collides by construction with Dirty's tracked-file edit: two
+// independent appends to the same file at the same base revision always
+// conflict on `stash pop`, and callers that want that conflict do it
+// explicitly by editing the same file the peer touched.
 func (sb *Sandbox) PeerCommit(rel, msg string) {
 	sb.T.Helper()
 	dst := filepath.Join(sb.Home, "peer", rel)
-	AppendFileIn(sb.T, dst, "README.md", msg+"\n")
+	AppendFileIn(sb.T, dst, "PEER.md", msg+"\n")
 	sb.Git(dst, "add", "-A")
 	sb.Git(dst, "commit", "-qm", msg)
 	sb.Git(dst, "push", "-q")
