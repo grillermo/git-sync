@@ -183,7 +183,7 @@ func TestSaveWritesRemoteNames(t *testing.T) {
 func TestRepoPathRejectsEscapingRelpaths(t *testing.T) {
 	// A relpath arrives over ssh from the peer. Never let it escape base_dir.
 	c := config.Config{BaseDir: "/home/me/code"}
-	for _, in := range []string{"../etc", "a/../../etc", "/etc"} {
+	for _, in := range []string{"../etc", "a/../../etc", "/etc", "."} {
 		if err := c.ValidateRel(in); err == nil {
 			t.Errorf("ValidateRel(%q) = nil, want an error", in)
 		}

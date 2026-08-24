@@ -149,5 +149,8 @@ func (c Config) ValidateRel(rel string) error {
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("repo path %q escapes base_dir", rel)
 	}
+	if clean == "." {
+		return fmt.Errorf("repo path %q must not be the base_dir itself", rel)
+	}
 	return nil
 }
