@@ -1,6 +1,7 @@
 package report_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -8,10 +9,13 @@ import (
 	"github.com/grillermo/git-sync/internal/report"
 )
 
+// Msg is derived from repo and minute so every event carries a distinguishable
+// message: a test can then say *which* event a summary's LastMsg came from.
 func ev(repo string, op activity.Op, st activity.Status, min int) activity.Event {
 	return activity.Event{
 		Time: time.Date(2026, 8, 22, 12, min, 0, 0, time.UTC),
 		Repo: repo, Op: op, Status: st,
+		Msg: fmt.Sprintf("%s@%d", repo, min),
 	}
 }
 
@@ -97,6 +101,21 @@ func TestSummarizeTracksLastActivityAndLastProblem(t *testing.T) {
 	}
 }
 
+// The report prints LastMsg beside the repo, so it has to be the newest
+// event's message - not the first seen, and not whatever happened to be last
+// in the input. The newest event sits in the middle here to catch both.
+func TestSummarizeTracksLastMsgFromNewestEvent(t *testing.T) {
+	events := []activity.Event{
+		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("a/one", activity.OpPush, activity.StatusOK, 9),
+		ev("a/one", activity.OpPush, activity.StatusOK, 5),
+	}
+	s := report.Summarize(events)[0]
+	if s.LastMsg != "a/one@9" {
+		t.Errorf("LastMsg = %q, want the 12:09 message %q", s.LastMsg, "a/one@9")
+	}
+}
+
 func TestSummarizeKeepsEventsNewestFirst(t *testing.T) {
 	events := []activity.Event{
 		ev("a/one", activity.OpPush, activity.StatusOK, 1),
@@ -117,15 +136,21 @@ func TestSummarizeEmptyInput(t *testing.T) {
 	}
 }
 
+// The cutoff is inclusive: an event landing exactly on Since is kept, so
+// `--since 12:15` twice in a row can't drop an event the first run showed.
 func TestFilterSince(t *testing.T) {
 	events := []activity.Event{
 		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("a/one", activity.OpPush, activity.StatusOK, 15), // exactly the cutoff
 		ev("a/one", activity.OpPush, activity.StatusOK, 30),
 	}
 	cutoff := time.Date(2026, 8, 22, 12, 15, 0, 0, time.UTC)
 	got := report.Filter(events, report.Options{Since: cutoff})
-	if len(got) != 1 {
-		t.Fatalf("got %d events, want 1", len(got))
+	if len(got) != 2 {
+		t.Fatalf("got %d events, want 2 (12:15 and 12:30)", len(got))
+	}
+	if got[0].Time.Minute() != 15 {
+		t.Errorf("first kept event = %v, want the 12:15 event on the cutoff", got[0].Time)
 	}
 }
 
