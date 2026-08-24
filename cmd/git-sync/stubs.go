@@ -87,7 +87,8 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 
 	if !*noPeer {
 		fmt.Fprintf(stdout, "checking those repos on %s\n", host)
-		if !checkPeer(config.Config{BaseDir: base, PeerHost: host, PeerUser: user}, *peerBaseDir, repoWants(config.Config{BaseDir: base}, repos), stdout, stderr) {
+		remotes := cfgRemotes()
+		if !checkPeer(config.Config{BaseDir: base, PeerHost: host, PeerUser: user, RemoteNames: remotes}, *peerBaseDir, repoWants(config.Config{BaseDir: base, RemoteNames: remotes}, repos), stdout, stderr) {
 			fmt.Fprintln(stdout, "cancelled; nothing was installed and the peer was not touched")
 			return 0
 		}

@@ -36,7 +36,7 @@ func ProvisionPeer(o PeerOptions) error {
 	if o.Out == nil {
 		o.Out = io.Discard
 	}
-	target := o.Cfg.PeerUser + "@" + o.Cfg.PeerHost
+	target := Target(o.Cfg)
 
 	// 1-2. The binary is copied verbatim, so a mismatched peer could never run
 	//      it; and every path we write must be absolute, which needs the peer's
@@ -83,14 +83,20 @@ func ProvisionPeer(o PeerOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := sshIn(target, "cat > "+peerGitsync+"/config.toml", bytes.NewReader(toml)); err != nil {
+	cfgCmd := fmt.Sprintf(
+		"cat > %s/config.toml.tmp && mv %s/config.toml.tmp %s/config.toml",
+		peerGitsync, peerGitsync, peerGitsync)
+	if err := sshIn(target, cfgCmd, bytes.NewReader(toml)); err != nil {
 		return err
 	}
 
-	// 6. The hook shim.
+	// 6. The hook shim, written then renamed for the same reason as the binary:
+	//    a commit landing on the peer mid-transfer must never exec a half-written
+	//    shim.
 	shim := fmt.Sprintf(hookShimTemplate, peerGitsync+"/bin/git-sync")
-	hookCmd := fmt.Sprintf("cat > %s/hooks/post-commit && chmod +x %s/hooks/post-commit",
-		peerGitsync, peerGitsync)
+	hookCmd := fmt.Sprintf(
+		"cat > %s/hooks/post-commit.tmp && chmod +x %s/hooks/post-commit.tmp && mv %s/hooks/post-commit.tmp %s/hooks/post-commit",
+		peerGitsync, peerGitsync, peerGitsync, peerGitsync)
 	if err := sshIn(target, hookCmd, strings.NewReader(shim)); err != nil {
 		return err
 	}
