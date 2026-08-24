@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/grillermo/git-sync/internal/config"
+	"github.com/grillermo/git-sync/internal/secret"
+	"github.com/grillermo/git-sync/internal/sshx"
 )
 
 // PeerOptions describes the peer half of an install.
@@ -22,6 +25,11 @@ type PeerOptions struct {
 	SelfUser    string        // the account the peer should ssh back into
 	PeerBaseDir string        // overrides the derived peer base_dir
 	Out         io.Writer
+	// In, when set to a terminal, lets ProvisionPeer offer to set up the way
+	// back: a password on the peer for reaching this machine. Left nil in
+	// tests (and by any non-interactive caller), in which case this step is
+	// skipped with a message rather than a hang.
+	In io.Reader
 }
 
 var errPeerUnreachable = errors.New("peer unreachable")
@@ -109,7 +117,77 @@ func ProvisionPeer(o PeerOptions) error {
 	fmt.Fprintf(o.Out, "provisioned %s: %d repos, base_dir %s\n",
 		o.Cfg.PeerHost, len(o.Cfg.Repos), peerCfg.BaseDir)
 	fmt.Fprintf(o.Out, "  the peer will reach back at %s@%s\n", o.SelfUser, o.SelfHost)
+
+	o.setUpTheWayBack(target, peerGitsync)
 	return nil
+}
+
+// setUpTheWayBack gives the peer a password for reaching this machine, so
+// syncing works in both directions. Runtime is symmetric: the peer runs its
+// own push, which ssh's back to us, and if this machine also wants a
+// password, the peer needs one stored too. Best-effort and silent about
+// failures beyond a message - the outbound direction (already provisioned
+// above) still works either way.
+func (o PeerOptions) setUpTheWayBack(target, peerGitsync string) {
+	selfAccount := o.SelfUser + "@" + o.SelfHost
+
+	if o.In == nil {
+		fmt.Fprintf(o.Out, "  if %s needs a password to reach %s, run "+
+			"'git-sync install' there too (or copy your ssh key with ssh-copy-id)\n",
+			o.Cfg.PeerHost, selfAccount)
+		return
+	}
+
+	// The usual case is the same account and the same password on both
+	// machines: if we ourselves needed a password to reach the peer, that is
+	// the one already sitting, verified, in our own keychain right now.
+	pw, err := secret.Get(target)
+	if err != nil {
+		// We reach the peer via key auth; nothing to offer as a default, and
+		// nothing was ever typed to reuse.
+		return
+	}
+
+	if !confirmYesDefault(o.Out, o.In,
+		fmt.Sprintf("use the same password for the way back (%s)? [Y/n]: ", selfAccount)) {
+		return
+	}
+
+	// 2. Store it on the peer, over the encrypted channel - never in the
+	// remote command line, never in the peer's shell history.
+	savepass := fmt.Sprintf("%s/bin/git-sync savepass '%s'", peerGitsync, selfAccount)
+	if err := sshIn(target, savepass, bytes.NewReader(pw)); err != nil {
+		fmt.Fprintf(o.Out, "  could not save a password on %s: %v\n", o.Cfg.PeerHost, err)
+		return
+	}
+
+	// 3. The peer's own askpass shim, naming the account it will reach us at.
+	//    Same temp-file-then-rename treatment as the hook and binary.
+	shim := fmt.Sprintf(askpassShimTemplate, peerGitsync+"/bin/git-sync", selfAccount)
+	shimCmd := fmt.Sprintf(
+		"cat > %s/askpass.tmp && chmod 700 %s/askpass.tmp && mv %s/askpass.tmp %s/askpass",
+		peerGitsync, peerGitsync, peerGitsync, peerGitsync)
+	if err := sshIn(target, shimCmd, strings.NewReader(shim)); err != nil {
+		fmt.Fprintf(o.Out, "  could not write the peer's askpass helper: %v\n", err)
+		return
+	}
+	fmt.Fprintf(o.Out, "  saved a password on %s for reaching %s\n", o.Cfg.PeerHost, selfAccount)
+}
+
+// confirmYesDefault asks a yes/no question defaulting to yes: only an
+// explicit n/no answers false, EOF included, since a script feeding no input
+// at all should not be read as consent.
+func confirmYesDefault(w io.Writer, r io.Reader, question string) bool {
+	fmt.Fprint(w, question)
+	sc := bufio.NewScanner(r)
+	if !sc.Scan() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(sc.Text())) {
+	case "n", "no":
+		return false
+	}
+	return true
 }
 
 func (o PeerOptions) peerBase(peerHome string) string {
@@ -159,16 +237,18 @@ type PeerProbe struct {
 }
 
 // Probe asks the peer the two questions every later step depends on. A failure
-// here is what "unreachable" means: nothing has been written yet.
+// here is what "unreachable" means: nothing has been written yet - unless the
+// peer is reachable but wants a password, which classify tells apart from a
+// real connectivity failure.
 func Probe(target string) (PeerProbe, error) {
 	var p PeerProbe
 	uname, err := sshOut(target, "uname -sm")
 	if err != nil {
-		return p, fmt.Errorf("%w: %s: %v", errPeerUnreachable, target, err)
+		return p, classify(target, sshErrText(err), err)
 	}
 	home, err := sshOut(target, "echo $HOME")
 	if err != nil {
-		return p, fmt.Errorf("%w: %s: %v", errPeerUnreachable, target, err)
+		return p, classify(target, sshErrText(err), err)
 	}
 	p.Uname = strings.TrimSpace(uname)
 	p.Home = strings.TrimSpace(home)
@@ -214,14 +294,8 @@ func unameArch() string {
 	return runtime.GOARCH // arm64 prints as arm64 on both platforms
 }
 
-// sshArgs is key-auth only; Task 12 moves this into internal/sshx so a peer
-// that wants a password is handled here too.
-func sshArgs(target, remote string) []string {
-	return []string{"-o", "ConnectTimeout=5", "-o", "BatchMode=yes", target, remote}
-}
-
 func ssh(target, remote string) error {
-	out, err := exec.Command("ssh", sshArgs(target, remote)...).CombinedOutput()
+	out, err := sshx.Command(target, remote).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ssh %s %q: %w: %s", target, remote, err, strings.TrimSpace(string(out)))
 	}
@@ -229,16 +303,28 @@ func ssh(target, remote string) error {
 }
 
 func sshOut(target, remote string) (string, error) {
-	out, err := exec.Command("ssh", sshArgs(target, remote)...).Output()
+	out, err := sshx.Command(target, remote).Output()
 	return string(out), err
 }
 
 func sshIn(target, remote string, stdin io.Reader) error {
-	cmd := exec.Command("ssh", sshArgs(target, remote)...)
+	cmd := sshx.Command(target, remote)
 	cmd.Stdin = stdin
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ssh %s %q: %w: %s", target, remote, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// sshErrText extracts whatever text is available from an ssh failure - the
+// captured stderr when Output() produced an *exec.ExitError, or the error's
+// own message otherwise - so classify has something to look for
+// "Permission denied" in.
+func sshErrText(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return string(ee.Stderr)
+	}
+	return err.Error()
 }

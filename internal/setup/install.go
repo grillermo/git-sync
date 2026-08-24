@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/grillermo/git-sync/internal/config"
+	"github.com/grillermo/git-sync/internal/secret"
 )
 
 type Options struct {
@@ -174,6 +175,9 @@ func Uninstall(purge bool, out io.Writer) error {
 	fmt.Fprintln(out, "removed hooks and binary")
 
 	if purge {
+		if cfg, err := config.Load(); err == nil && cfg.PeerUser != "" && cfg.PeerHost != "" {
+			_ = secret.Delete(cfg.PeerUser + "@" + cfg.PeerHost)
+		}
 		if err := os.RemoveAll(config.Home()); err != nil {
 			return err
 		}

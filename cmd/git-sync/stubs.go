@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/grillermo/git-sync/internal/gitcmd"
 	"github.com/grillermo/git-sync/internal/picker"
 	"github.com/grillermo/git-sync/internal/scan"
+	"github.com/grillermo/git-sync/internal/secret"
 	"github.com/grillermo/git-sync/internal/setup"
 	"github.com/grillermo/git-sync/internal/syncer"
 )
@@ -70,9 +72,27 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// TODO(Task 12): stage "connect" - call setup.EnsureAuth(setup.Target(cfg), ...)
-	// here, before picking repos, so a password prompt for the peer doesn't
-	// ambush the user after they've already ticked forty repos.
+	// Stage "connect": settle password auth with the peer, if it needs one,
+	// before picking repos - asking after the user has already ticked forty
+	// repos would mean asking twice. Skipped along with the rest of peer
+	// provisioning under --no-peer, since nothing is going to ssh there.
+	if !*noPeer {
+		target := setup.Target(config.Config{PeerHost: host, PeerUser: user})
+		var stdin io.Reader
+		if isTTY(stdout) {
+			stdin = os.Stdin
+		}
+		if err := setup.EnsureAuth(target, stdin, stdout); err != nil {
+			if setup.IsPeerUnreachable(err) {
+				// Install already survives an unreachable peer; do not turn a
+				// warning into a dead end here either.
+				fmt.Fprintf(stderr, "could not reach %s (%v); continuing\n", host, err)
+			} else {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+		}
+	}
 
 	fmt.Fprintf(stdout, "choosing repos under %s\n", base)
 	repos, err := chooseRepos(base, *all, *only, stdout, stderr)
@@ -298,5 +318,40 @@ func cmdReceive(args []string, stderr io.Writer) int {
 	return syncer.Receive(args[0])
 }
 
-func cmdAskpass(args []string, stdout, stderr io.Writer) int           { return 1 }
-func cmdSavepass(args []string, stdin io.Reader, stderr io.Writer) int { return 1 }
+// cmdAskpass prints the stored password for the account baked into the shim.
+// ssh execs this, reads one line of stdout, and uses it as the password.
+func cmdAskpass(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		return 2
+	}
+	// ssh passes the prompt text as an argument too; the account is args[0],
+	// written into the shim at install time.
+	pw, err := secret.Get(args[0])
+	if err != nil {
+		// Printing nothing makes ssh fail the auth rather than hang.
+		fmt.Fprintln(stderr, "git-sync: no stored password for", args[0])
+		return 1
+	}
+	fmt.Fprintln(stdout, string(pw))
+	return 0
+}
+
+// cmdSavepass reads a password from stdin and stores it. Invoked over ssh on
+// the peer, so the password crosses the encrypted channel and never appears
+// in the remote command line or the peer's shell history.
+func cmdSavepass(args []string, stdin io.Reader, stderr io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "usage: git-sync savepass <account>")
+		return 2
+	}
+	pw, err := io.ReadAll(io.LimitReader(stdin, 4096))
+	if err != nil || len(bytes.TrimSpace(pw)) == 0 {
+		fmt.Fprintln(stderr, "git-sync: empty password on stdin")
+		return 1
+	}
+	if err := secret.Set(args[0], bytes.TrimRight(pw, "\r\n")); err != nil {
+		fmt.Fprintln(stderr, "git-sync:", err)
+		return 1
+	}
+	return 0
+}

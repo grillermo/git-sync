@@ -9,6 +9,7 @@ import (
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/gitcmd"
+	"github.com/grillermo/git-sync/internal/sshx"
 )
 
 // ExitRepoNotHere is receive's exit code for "this machine has no copy of
@@ -80,16 +81,13 @@ func Push(rel string) int {
 
 // notify asks the peer to run its own receive for this repo.
 //
-// Task 12 replaces the exec.Command below with sshx.Command, so that a peer
-// which needs a password works here too. Until then this is key-auth only.
+// Goes through sshx so a peer that needs a password works here too: if one
+// is stored, sshx arms the askpass helper instead of BatchMode=yes.
 func notify(cfg config.Config, rel, branch string) {
 	target := cfg.PeerUser + "@" + cfg.PeerHost
 	remote := fmt.Sprintf("~/.gitsync/bin/git-sync receive '%s'", rel)
 
-	cmd := exec.Command("ssh",
-		"-o", "ConnectTimeout=5",
-		"-o", "BatchMode=yes",
-		target, remote)
+	cmd := sshx.Command(target, remote)
 	out, err := cmd.CombinedOutput()
 
 	ev := activity.Event{Repo: rel, Op: activity.OpNotify, Branch: branch, Peer: cfg.PeerHost}

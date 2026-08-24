@@ -10,6 +10,7 @@ import (
 
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
+	"github.com/grillermo/git-sync/internal/secret"
 	"github.com/grillermo/git-sync/internal/setup"
 	"github.com/grillermo/git-sync/internal/testutil"
 )
@@ -239,6 +240,48 @@ func TestUninstallPurgeRemovesEverything(t *testing.T) {
 	}
 	if _, err := os.Stat(config.Home()); !os.IsNotExist(err) {
 		t.Error("--purge should remove the whole gitsync home")
+	}
+}
+
+func TestUninstallPurgeForgetsThePassword(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.StubSSH(0)
+	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
+	_ = setup.Install(setup.Options{
+		BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester",
+		Self: self, NoPeer: true, Out: io.Discard,
+	})
+	if err := secret.Set("tester@peer.example", []byte("hunter2")); err != nil {
+		t.Fatalf("secret.Set: %v", err)
+	}
+
+	if err := setup.Uninstall(true, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if secret.Has("tester@peer.example") {
+		t.Error("--purge should forget the stored password")
+	}
+}
+
+func TestUninstallWithoutPurgeKeepsThePassword(t *testing.T) {
+	// Same reasoning as keeping config and activity history: you may be
+	// about to re-install.
+	sb := testutil.NewSandbox(t)
+	sb.StubSSH(0)
+	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
+	_ = setup.Install(setup.Options{
+		BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester",
+		Self: self, NoPeer: true, Out: io.Discard,
+	})
+	if err := secret.Set("tester@peer.example", []byte("hunter2")); err != nil {
+		t.Fatalf("secret.Set: %v", err)
+	}
+
+	if err := setup.Uninstall(false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !secret.Has("tester@peer.example") {
+		t.Error("a plain uninstall should keep the stored password")
 	}
 }
 

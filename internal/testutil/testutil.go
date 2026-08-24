@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -154,7 +155,10 @@ func (sb *Sandbox) StubSSHFailing(code int, stderrMsg string) {
 }
 
 // StubSSHPassword is a fake ssh that rejects every attempt until
-// $SSH_ASKPASS yields want, at which point it succeeds.
+// $SSH_ASKPASS yields want, at which point it succeeds. Once accepted, it
+// answers the uname/$HOME probes Probe() sends with canned replies (like
+// StubSSHScripted), so a caller that verifies a password by calling Probe()
+// again sees a fully successful probe, not just a bare exit 0.
 func (sb *Sandbox) StubSSHPassword(want string) {
 	sb.T.Helper()
 	script := "#!/bin/sh\n" +
@@ -168,8 +172,27 @@ func (sb *Sandbox) StubSSHPassword(want string) {
 		"  echo 'Permission denied, please try again.' >&2\n" +
 		"  exit 5\n" +
 		"fi\n" +
+		"case \"$*\" in\n" +
+		"  *uname*) printf '%s' " + shellQuote(localUnameForTest()) + " ;;\n" +
+		"  *'$HOME'*) printf '%s' '/home/peer' ;;\n" +
+		"esac\n" +
 		"exit 0\n"
 	sb.installSSHStub(script)
+}
+
+// localUnameForTest mimics `uname -sm` for the platform running the test, so
+// StubSSHPassword's canned reply passes checkSamePlatform when a caller goes
+// on to provision the peer.
+func localUnameForTest() string {
+	os := "Linux"
+	if runtime.GOOS == "darwin" {
+		os = "Darwin"
+	}
+	arch := runtime.GOARCH
+	if arch == "amd64" {
+		arch = "x86_64"
+	}
+	return os + " " + arch
 }
 
 // StubSSHScripted installs a fake ssh that answers the two probe commands
