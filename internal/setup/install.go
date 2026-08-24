@@ -81,9 +81,12 @@ func Install(o Options) error {
 		return fmt.Errorf("installing the binary: %w", err)
 	}
 
+	// The hook shim and askpass shim are what git and ssh actually exec, so
+	// they get the same temp-file-then-rename treatment as the binary: a
+	// concurrent commit or ssh invocation must never see a half-written file.
 	shim := fmt.Sprintf(hookShimTemplate, config.BinPath())
 	hookPath := filepath.Join(config.HooksDir(), "post-commit")
-	if err := os.WriteFile(hookPath, []byte(shim), 0o755); err != nil {
+	if err := writeFileAtomic(hookPath, []byte(shim), 0o755); err != nil {
 		return fmt.Errorf("writing the hook: %w", err)
 	}
 
@@ -91,7 +94,7 @@ func Install(o Options) error {
 	// key auth is in use: nothing sets SSH_ASKPASS unless a password is
 	// actually stored. 0700 - it reads a credential out of the keychain.
 	askpass := fmt.Sprintf(askpassShimTemplate, config.BinPath(), o.PeerUser+"@"+o.PeerHost)
-	if err := os.WriteFile(config.AskpassPath(), []byte(askpass), 0o700); err != nil {
+	if err := writeFileAtomic(config.AskpassPath(), []byte(askpass), 0o700); err != nil {
 		return fmt.Errorf("writing the askpass helper: %w", err)
 	}
 	fmt.Fprintf(o.Out, "installed into %s\n", config.Home())
@@ -118,9 +121,9 @@ func Install(o Options) error {
 	return nil
 }
 
-// Uninstall removes the hook and the binary. It keeps config.toml and
-// activity.jsonl so `git-sync report` still works on your history, unless
-// purge is set.
+// Uninstall removes the hook, the binary, and the askpass shim. It keeps
+// config.toml and activity.jsonl so `git-sync report` still works on your
+// history, unless purge is set.
 func Uninstall(purge bool, out io.Writer) error {
 	if out == nil {
 		out = io.Discard
@@ -136,7 +139,7 @@ func Uninstall(purge bool, out io.Writer) error {
 		fmt.Fprintln(out, "unset global core.hooksPath")
 	}
 
-	for _, p := range []string{config.HooksDir(), filepath.Dir(config.BinPath()), config.LocksDir()} {
+	for _, p := range []string{config.HooksDir(), filepath.Dir(config.BinPath()), config.LocksDir(), config.AskpassPath()} {
 		if err := os.RemoveAll(p); err != nil {
 			return err
 		}
@@ -174,6 +177,17 @@ func copyExecutable(src, dst string) error {
 		return err
 	}
 	if err := outF.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
+
+// writeFileAtomic writes data to a temp file next to dst and renames it into
+// place, so a concurrent hook invocation or ssh call never sees a
+// half-written file - the same guarantee copyExecutable gives the binary.
+func writeFileAtomic(dst string, data []byte, perm os.FileMode) error {
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
 		return err
 	}
 	return os.Rename(tmp, dst)

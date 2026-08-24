@@ -199,6 +199,9 @@ func TestUninstallRemovesTheHookButKeepsHistory(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(config.HooksDir(), "post-commit")); !os.IsNotExist(err) {
 		t.Error("the hook should be gone")
 	}
+	if _, err := os.Stat(config.AskpassPath()); !os.IsNotExist(err) {
+		t.Error("the askpass shim should be gone")
+	}
 	out, _ := exec.Command("git", "config", "--global", "core.hooksPath").Output()
 	if strings.TrimSpace(string(out)) != "" {
 		t.Errorf("core.hooksPath should be unset, got %q", out)
@@ -243,6 +246,28 @@ func TestUninstallOnAFreshMachineIsNotAnError(t *testing.T) {
 	testutil.NewSandbox(t)
 	if err := setup.Uninstall(false, io.Discard); err != nil {
 		t.Errorf("uninstalling when nothing is installed should be a no-op: %v", err)
+	}
+}
+
+func TestInstallLeavesNoTempFilesBehind(t *testing.T) {
+	// The binary, hook shim, and askpass shim are all written via
+	// temp-file-then-rename; a successful install must not leave the .tmp
+	// siblings lying around.
+	sb := testutil.NewSandbox(t)
+	sb.StubSSH(0)
+	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
+	if err := setup.Install(setup.Options{BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self, Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range []string{
+		config.BinPath() + ".tmp",
+		filepath.Join(config.HooksDir(), "post-commit") + ".tmp",
+		config.AskpassPath() + ".tmp",
+	} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("temp file left behind: %s", p)
+		}
 	}
 }
 
