@@ -116,8 +116,35 @@ func Install(o Options) error {
 	}
 	fmt.Fprintf(o.Out, "set global core.hooksPath to %s\n", config.HooksDir())
 
-	// Peer provisioning is appended here in Task 11, replacing what used to
-	// be a bare reachability check.
+	if o.NoPeer {
+		fmt.Fprintln(o.Out, "skipping peer provisioning (--no-peer)")
+		fmt.Fprintln(o.Out, "done.")
+		return nil
+	}
+
+	selfHost := o.SelfHost
+	if selfHost == "" {
+		selfHost, _ = os.Hostname()
+	}
+	selfUser := o.SelfUser
+	if selfUser == "" {
+		selfUser = os.Getenv("USER")
+	}
+
+	err = ProvisionPeer(PeerOptions{
+		Cfg: cfg, Self: config.BinPath(), SelfHost: selfHost, SelfUser: selfUser,
+		PeerBaseDir: o.PeerBaseDir, Out: o.Out,
+	})
+	switch {
+	case err == nil:
+		fmt.Fprintln(o.Out, "done. Both machines are set up.")
+	case IsPeerUnreachable(err):
+		// The local half is correct and useful on its own.
+		fmt.Fprintf(o.Out, "WARNING: peer %s not provisioned: unreachable.\n", cfg.PeerHost)
+		fmt.Fprintln(o.Out, "         This machine is set up. Re-run install once the peer is up.")
+	default:
+		return fmt.Errorf("provisioning the peer: %w", err)
+	}
 	return nil
 }
 

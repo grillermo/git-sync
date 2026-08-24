@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -84,21 +85,32 @@ func Load() (Config, error) {
 }
 
 func (c Config) Save() error {
-	// Write the effective preference order, not an empty list: the file is
-	// meant to be read and edited, and a silent default is invisible there.
-	c.RemoteNames = c.Remotes()
-	if err := os.MkdirAll(Home(), 0o755); err != nil {
-		return err
-	}
-	f, err := os.Create(Path())
+	b, err := c.Marshal()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if _, err := fmt.Fprint(f, "# git-sync configuration. Edit freely.\n"); err != nil {
+	if err := os.MkdirAll(Home(), 0o755); err != nil {
 		return err
 	}
-	return toml.NewEncoder(f).Encode(c)
+	return os.WriteFile(Path(), b, 0o644)
+}
+
+// Marshal produces the exact bytes Save writes to config.toml: the same
+// header followed by the TOML encoding. Used both for the local file and for
+// streaming the mirrored config to a peer over ssh, so the two can never
+// drift apart.
+func (c Config) Marshal() ([]byte, error) {
+	// Write the effective preference order, not an empty list: the file is
+	// meant to be read and edited, and a silent default is invisible there.
+	c.RemoteNames = c.Remotes()
+	var buf bytes.Buffer
+	if _, err := buf.WriteString("# git-sync configuration. Edit freely.\n"); err != nil {
+		return nil, err
+	}
+	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // RepoRel converts an absolute repo path into the relative path that

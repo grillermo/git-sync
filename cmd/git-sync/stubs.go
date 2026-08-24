@@ -15,6 +15,7 @@ import (
 
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
+	"github.com/grillermo/git-sync/internal/gitcmd"
 	"github.com/grillermo/git-sync/internal/picker"
 	"github.com/grillermo/git-sync/internal/scan"
 	"github.com/grillermo/git-sync/internal/setup"
@@ -84,10 +85,13 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// TODO(Task 11): stage "verify" - ask the peer which of the selected
-	// repos it actually has (the counterpart check), print mismatches, and
-	// give the user a last chance to quit with 'q' before Install writes
-	// anything.
+	if !*noPeer {
+		fmt.Fprintf(stdout, "checking those repos on %s\n", host)
+		if !checkPeer(config.Config{BaseDir: base, PeerHost: host, PeerUser: user}, *peerBaseDir, repoWants(config.Config{BaseDir: base}, repos), stdout, stderr) {
+			fmt.Fprintln(stdout, "cancelled; nothing was installed and the peer was not touched")
+			return 0
+		}
+	}
 
 	fmt.Fprintln(stdout, "installing")
 	if err := setup.Install(setup.Options{
@@ -130,8 +134,7 @@ func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) (
 		current = cfg.Repos
 	}
 
-	f, isFile := stdout.(*os.File)
-	if !isFile || !term.IsTerminal(int(f.Fd())) {
+	if !isTTY(stdout) {
 		return nil, errors.New(
 			"no terminal for the repo picker: pass --all or --repos a,b,c")
 	}
@@ -145,6 +148,74 @@ func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) (
 		return nil, nil
 	}
 	return m.Selected(), nil
+}
+
+// isTTY reports whether w is an *os.File connected to a terminal.
+func isTTY(w io.Writer) bool {
+	f, isFile := w.(*os.File)
+	return isFile && term.IsTerminal(int(f.Fd()))
+}
+
+// repoWants pairs each selected repo with the remote URL this machine syncs
+// it through. A repo with no remote gets an empty URL, which the peer check
+// then reports as a mismatch rather than pretending it is fine.
+func repoWants(cfg config.Config, repos []string) []setup.RepoWant {
+	out := make([]setup.RepoWant, 0, len(repos))
+	for _, rel := range repos {
+		w := setup.RepoWant{Rel: rel}
+		dir := cfg.RepoPath(rel)
+		if remote, err := gitcmd.ResolveRemote(dir, cfg.Remotes()); err == nil {
+			w.RemoteURL, _ = gitcmd.RemoteURL(dir, remote)
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// checkPeer asks the peer which selected repos it has, prints the mismatches
+// and returns whether to go ahead. The user can quit here with q, just as in
+// the picker: nothing has been written yet, on either machine.
+func checkPeer(cfg config.Config, peerBaseDir string, repos []setup.RepoWant, stdout, stderr io.Writer) bool {
+	probe, err := setup.Probe(setup.Target(cfg))
+	if err != nil {
+		// Install already survives an unreachable peer; do not turn a warning
+		// into a dead end here.
+		fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", cfg.PeerHost, err)
+		return true
+	}
+
+	checks, err := setup.CheckPeerReposWithRemotes(setup.Target(cfg),
+		setup.PeerBase(cfg.BaseDir, probe.Home, peerBaseDir), repos, cfg.Remotes())
+	if err != nil {
+		fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", cfg.PeerHost, err)
+		return true
+	}
+	n := setup.RenderRepoChecks(stdout, cfg.PeerHost,
+		setup.PeerBase(cfg.BaseDir, probe.Home, peerBaseDir), checks)
+	if n == 0 {
+		return true
+	}
+	// Nothing to decide without a terminal: report and carry on, since the
+	// mismatch is informational and the rest of the install is still correct.
+	if !isTTY(stdout) {
+		return true
+	}
+	return confirm(stdout, os.Stdin, "continue anyway? [enter] continue, [q] quit: ")
+}
+
+// confirm returns false only for an explicit quit. q, Q and EOF quit; anything
+// else, including a bare enter, continues.
+func confirm(w io.Writer, r io.Reader, question string) bool {
+	fmt.Fprint(w, question)
+	sc := bufio.NewScanner(r)
+	if !sc.Scan() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(sc.Text())) {
+	case "q", "quit", "n", "no":
+		return false
+	}
+	return true
 }
 
 // cfgRemotes returns the saved config's remote-name preference, or nil when

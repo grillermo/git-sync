@@ -2,6 +2,7 @@
 package testutil
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,6 +170,53 @@ func (sb *Sandbox) StubSSHPassword(want string) {
 		"fi\n" +
 		"exit 0\n"
 	sb.installSSHStub(script)
+}
+
+// StubSSHScripted installs a fake ssh that answers the two probe commands
+// provisioning sends, records every invocation, and streams any stdin it is
+// given to GitsyncHome/ssh-stdin-<n>. replies maps a substring of the remote
+// command to the stdout the stub should produce.
+func (sb *Sandbox) StubSSHScripted(replies map[string]string, exitCode int) {
+	sb.T.Helper()
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
+	b.WriteString("printf '%s\\n' \"$*\" >> \"$GITSYNC_HOME/ssh-calls.log\"\n")
+	b.WriteString("n=0\n")
+	b.WriteString("while [ -e \"$GITSYNC_HOME/ssh-stdin-$n\" ]; do n=$((n+1)); done\n")
+	b.WriteString("if [ ! -t 0 ]; then cat > \"$GITSYNC_HOME/ssh-stdin-$n\"; fi\n")
+	b.WriteString("case \"$*\" in\n")
+	for substr, reply := range replies {
+		fmt.Fprintf(&b, "  *%s*) printf '%%s' %s ;;\n", shellGlobEscape(substr), shellQuote(reply))
+	}
+	b.WriteString("esac\n")
+	fmt.Fprintf(&b, "exit %d\n", exitCode)
+	sb.installSSHStub(b.String())
+}
+
+// shellGlobEscape escapes characters that are special inside a `case`
+// pattern: glob metacharacters, and "$" and backslash, which would otherwise
+// undergo parameter expansion - so a literal substring like "$HOME" matches
+// itself rather than being expanded to the stub's own $HOME.
+func shellGlobEscape(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, "$", `\$`, "*", `\*`, "?", `\?`, "[", `\[`)
+	return r.Replace(s)
+}
+
+// SSHStdin returns what the stub captured on stdin for the ssh call whose
+// logged command line contains nameSubstring.
+func (sb *Sandbox) SSHStdin(t *testing.T, nameSubstring string) string {
+	t.Helper()
+	calls := strings.Split(strings.TrimRight(sb.SSHCalls(), "\n"), "\n")
+	for i, call := range calls {
+		if strings.Contains(call, nameSubstring) {
+			b, err := os.ReadFile(filepath.Join(sb.GitsyncHome, fmt.Sprintf("ssh-stdin-%d", i)))
+			if err != nil {
+				return ""
+			}
+			return string(b)
+		}
+	}
+	return ""
 }
 
 func (sb *Sandbox) installSSHStub(script string) {
