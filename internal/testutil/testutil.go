@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/grillermo/git-sync/internal/activity"
 )
 
 // Sandbox is an isolated fake machine: its own HOME, GITSYNC_HOME, git global
@@ -206,9 +208,39 @@ func WriteScript(t *testing.T, sb *Sandbox, name, body string) string {
 	return path
 }
 
-// TODO(task 2, task 3): once internal/config and internal/activity exist,
-// add SaveConfig, SaveConfigWithRepos, SaveConfigWithRemotes (config.toml
-// fixtures) and AssertEvent/AssertNoEvent (activity.Read() assertions) here.
+// TODO(task 2): once callers need config.toml fixtures, add SaveConfig,
+// SaveConfigWithRepos, SaveConfigWithRemotes here.
+
+// AssertEvent fails the test unless activity.Read() contains an event with
+// the given op, status and a Msg containing msgSubstr ("" matches any msg).
+func AssertEvent(t *testing.T, op activity.Op, status activity.Status, msgSubstr string) {
+	t.Helper()
+	events, err := activity.Read()
+	if err != nil {
+		t.Fatalf("activity.Read: %v", err)
+	}
+	for _, e := range events {
+		if e.Op == op && e.Status == status && strings.Contains(e.Msg, msgSubstr) {
+			return
+		}
+	}
+	t.Errorf("no event found with op=%s status=%s msg containing %q; got %+v", op, status, msgSubstr, events)
+}
+
+// AssertNoEvent fails the test if activity.Read() contains an event with the
+// given op and status.
+func AssertNoEvent(t *testing.T, op activity.Op, status activity.Status) {
+	t.Helper()
+	events, err := activity.Read()
+	if err != nil {
+		t.Fatalf("activity.Read: %v", err)
+	}
+	for _, e := range events {
+		if e.Op == op && e.Status == status {
+			t.Errorf("unexpected event with op=%s status=%s: %+v", op, status, e)
+		}
+	}
+}
 
 // MkdirAll makes every directory in dirs, failing the test on error.
 func MkdirAll(t *testing.T, dirs ...string) {
