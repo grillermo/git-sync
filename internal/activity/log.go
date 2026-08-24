@@ -2,8 +2,10 @@ package activity
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"time"
@@ -78,20 +80,31 @@ func Read() ([]Event, error) {
 	defer f.Close()
 
 	var events []Event
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), MaxLineLen*2)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
+	r := bufio.NewReader(f)
+	for {
+		line, err := r.ReadBytes('\n')
+		// ReadBytes returns whatever it read even on error (e.g. io.EOF on
+		// the final, unterminated line), so process it before checking err.
+		trimmed := bytes.TrimSuffix(line, []byte("\n"))
+		if len(trimmed) > 0 {
+			if len(trimmed) <= MaxLineLen*2 {
+				var e Event
+				if json.Unmarshal(trimmed, &e) == nil {
+					events = append(events, e)
+				}
+				// else: corrupt line, skip and keep reading.
+			}
+			// else: oversized/garbled line, skip it - ReadBytes already
+			// consumed through the newline (or EOF), so the loop just
+			// continues onto the next line instead of aborting the read.
 		}
-		var e Event
-		if err := json.Unmarshal(line, &e); err != nil {
-			continue
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return events, nil
+			}
+			return events, err
 		}
-		events = append(events, e)
 	}
-	return events, sc.Err()
 }
 
 // AppendDebug records raw git/ssh output for troubleshooting. Separate from

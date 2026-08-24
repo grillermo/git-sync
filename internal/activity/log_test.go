@@ -75,6 +75,25 @@ func TestReadSkipsCorruptLines(t *testing.T) {
 	}
 }
 
+func TestReadSkipsAnOversizedCorruptLine(t *testing.T) {
+	testutil.NewSandbox(t)
+	_ = activity.Append(activity.Event{Repo: "a", Op: activity.OpPush})
+	// Simulate a badly torn/garbled write far larger than any reasonable
+	// scanner buffer - this must not abort the read or lose events after it.
+	f, _ := os.OpenFile(config.ActivityPath(), os.O_APPEND|os.O_WRONLY, 0o644)
+	_, _ = f.WriteString(strings.Repeat("x", 100000) + "\n")
+	_ = f.Close()
+	_ = activity.Append(activity.Event{Repo: "b", Op: activity.OpPush})
+
+	got, err := activity.Read()
+	if err != nil {
+		t.Fatalf("an oversized corrupt line must not fail the whole read: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d events, want the 2 good ones (before and after the garbage line)", len(got))
+	}
+}
+
 func TestAppendIsAtomicUnderConcurrency(t *testing.T) {
 	testutil.NewSandbox(t)
 	const n = 50
