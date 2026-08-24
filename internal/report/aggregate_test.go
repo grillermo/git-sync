@@ -1,0 +1,198 @@
+package report_test
+
+import (
+	"testing"
+	"time"
+
+	"github.com/grillermo/git-sync/internal/activity"
+	"github.com/grillermo/git-sync/internal/report"
+)
+
+func ev(repo string, op activity.Op, st activity.Status, min int) activity.Event {
+	return activity.Event{
+		Time: time.Date(2026, 8, 22, 12, min, 0, 0, time.UTC),
+		Repo: repo, Op: op, Status: st,
+	}
+}
+
+func TestSummarizeGroupsByRepo(t *testing.T) {
+	events := []activity.Event{
+		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("b/two", activity.OpPush, activity.StatusOK, 2),
+		ev("a/one", activity.OpReceive, activity.StatusOK, 3),
+	}
+	got := report.Summarize(events)
+	if len(got) != 2 {
+		t.Fatalf("got %d repos, want 2", len(got))
+	}
+}
+
+func TestSummarizeCountsByOutcome(t *testing.T) {
+	events := []activity.Event{
+		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("a/one", activity.OpPush, activity.StatusError, 2),
+		ev("a/one", activity.OpReceive, activity.StatusWarn, 3),
+		ev("a/one", activity.OpNotify, activity.StatusSkip, 4),
+	}
+	s := report.Summarize(events)[0]
+	if s.Total != 4 {
+		t.Errorf("Total = %d, want 4", s.Total)
+	}
+	if s.Problems != 2 {
+		t.Errorf("Problems = %d, want 2 (one error + one warn)", s.Problems)
+	}
+	if s.Pushes != 2 {
+		t.Errorf("Pushes = %d, want 2", s.Pushes)
+	}
+	if s.Receives != 1 {
+		t.Errorf("Receives = %d, want 1", s.Receives)
+	}
+}
+
+func TestSummarizeOrdersByMostRecentActivity(t *testing.T) {
+	events := []activity.Event{
+		ev("old/repo", activity.OpPush, activity.StatusOK, 1),
+		ev("new/repo", activity.OpPush, activity.StatusOK, 9),
+		ev("mid/repo", activity.OpPush, activity.StatusOK, 5),
+	}
+	got := report.Summarize(events)
+	want := []string{"new/repo", "mid/repo", "old/repo"}
+	for i, w := range want {
+		if got[i].Repo != w {
+			t.Errorf("position %d = %q, want %q", i, got[i].Repo, w)
+		}
+	}
+}
+
+// Repos grouped from a map come out in random order, so a tie on LastActivity
+// has to break on something deterministic or the report shuffles run to run.
+func TestSummarizeBreaksOrderTiesByRepoName(t *testing.T) {
+	events := []activity.Event{
+		ev("c/three", activity.OpPush, activity.StatusOK, 4),
+		ev("a/one", activity.OpPush, activity.StatusOK, 4),
+		ev("b/two", activity.OpPush, activity.StatusOK, 4),
+	}
+	want := []string{"a/one", "b/two", "c/three"}
+	for range 20 { // map order varies per iteration; one pass could pass by luck
+		got := report.Summarize(events)
+		for i, w := range want {
+			if got[i].Repo != w {
+				t.Fatalf("position %d = %q, want %q", i, got[i].Repo, w)
+			}
+		}
+	}
+}
+
+func TestSummarizeTracksLastActivityAndLastProblem(t *testing.T) {
+	events := []activity.Event{
+		ev("a/one", activity.OpPush, activity.StatusError, 1),
+		ev("a/one", activity.OpPush, activity.StatusOK, 7),
+	}
+	s := report.Summarize(events)[0]
+	if s.LastActivity.Minute() != 7 {
+		t.Errorf("LastActivity = %v, want 12:07", s.LastActivity)
+	}
+	if s.LastProblem.Minute() != 1 {
+		t.Errorf("LastProblem = %v, want 12:01", s.LastProblem)
+	}
+}
+
+func TestSummarizeKeepsEventsNewestFirst(t *testing.T) {
+	events := []activity.Event{
+		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("a/one", activity.OpPush, activity.StatusOK, 5),
+	}
+	s := report.Summarize(events)[0]
+	if len(s.Events) != 2 {
+		t.Fatalf("got %d events, want 2", len(s.Events))
+	}
+	if s.Events[0].Time.Minute() != 5 {
+		t.Error("per-repo history should read newest first")
+	}
+}
+
+func TestSummarizeEmptyInput(t *testing.T) {
+	if got := report.Summarize(nil); len(got) != 0 {
+		t.Errorf("got %d summaries, want 0", len(got))
+	}
+}
+
+func TestFilterSince(t *testing.T) {
+	events := []activity.Event{
+		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("a/one", activity.OpPush, activity.StatusOK, 30),
+	}
+	cutoff := time.Date(2026, 8, 22, 12, 15, 0, 0, time.UTC)
+	got := report.Filter(events, report.Options{Since: cutoff})
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1", len(got))
+	}
+}
+
+func TestFilterProblemsOnly(t *testing.T) {
+	events := []activity.Event{
+		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("a/one", activity.OpPush, activity.StatusWarn, 2),
+		ev("a/one", activity.OpPush, activity.StatusSkip, 3),
+	}
+	got := report.Filter(events, report.Options{ProblemsOnly: true})
+	if len(got) != 1 || got[0].Status != activity.StatusWarn {
+		t.Errorf("got %+v, want just the warn", got)
+	}
+}
+
+func TestFilterByRepoSubstring(t *testing.T) {
+	events := []activity.Event{
+		ev("work/api", activity.OpPush, activity.StatusOK, 1),
+		ev("personal/notes", activity.OpPush, activity.StatusOK, 2),
+	}
+	got := report.Filter(events, report.Options{Repo: "work"})
+	if len(got) != 1 || got[0].Repo != "work/api" {
+		t.Errorf("got %+v, want just work/api", got)
+	}
+}
+
+func TestFilterZeroOptionsKeepsEverything(t *testing.T) {
+	events := []activity.Event{
+		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("b/two", activity.OpNotify, activity.StatusSkip, 2),
+	}
+	if got := report.Filter(events, report.Options{}); len(got) != 2 {
+		t.Errorf("got %d events, want all 2", len(got))
+	}
+}
+
+// The three options narrow together, not one at a time.
+func TestFilterCombinesOptions(t *testing.T) {
+	events := []activity.Event{
+		ev("work/api", activity.OpPush, activity.StatusError, 1),        // too old
+		ev("personal/notes", activity.OpPush, activity.StatusError, 20), // wrong repo
+		ev("work/api", activity.OpPush, activity.StatusOK, 25),          // not a problem
+		ev("work/api", activity.OpPush, activity.StatusError, 30),       // keeper
+	}
+	got := report.Filter(events, report.Options{
+		Since:        time.Date(2026, 8, 22, 12, 15, 0, 0, time.UTC),
+		Repo:         "work",
+		ProblemsOnly: true,
+	})
+	if len(got) != 1 || got[0].Time.Minute() != 30 {
+		t.Errorf("got %+v, want just the 12:30 work/api error", got)
+	}
+}
+
+func TestTotalizeAcrossAllRepos(t *testing.T) {
+	events := []activity.Event{
+		ev("a/one", activity.OpPush, activity.StatusOK, 1),
+		ev("b/two", activity.OpPush, activity.StatusError, 2),
+	}
+	tot := report.Totalize(report.Summarize(events))
+	if tot.Repos != 2 || tot.Events != 2 || tot.Problems != 1 {
+		t.Errorf("Totalize = %+v", tot)
+	}
+}
+
+func TestTotalizeEmptyInput(t *testing.T) {
+	if tot := report.Totalize(nil); tot != (report.Totals{}) {
+		t.Errorf("Totalize(nil) = %+v, want zero", tot)
+	}
+}
