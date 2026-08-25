@@ -1,6 +1,8 @@
 package picker_test
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -234,6 +236,74 @@ func TestEmptyScanDoesNotPanic(t *testing.T) {
 	next, _ := m.Update(key("space"))
 	_ = next.(picker.Model).View()
 }
+
+// lineCount is what bubbletea's renderer counts: it splits the view on "\n"
+// and, if the result is taller than the terminal, drops lines off the *top* -
+// taking the title and the highlighted row with them.
+func lineCount(view string) int { return strings.Count(view, "\n") + 1 }
+
+func many(n int) []scan.Repo {
+	rels := make([]string, n)
+	for i := range rels {
+		rels[i] = fmt.Sprintf("repo%02d", i)
+	}
+	return found(rels...)
+}
+
+func shortTerm(m picker.Model) picker.Model {
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 12})
+	return next.(picker.Model)
+}
+
+func TestLongListFitsTheTerminalHeight(t *testing.T) {
+	// Anything taller than the terminal gets its top cut off by the renderer,
+	// so the view has to do its own windowing.
+	m := shortTerm(picker.New(many(40), nil))
+	if got := lineCount(m.View()); got > 12 {
+		t.Errorf("view is %d lines in a 12-line terminal:\n%s", got, m.View())
+	}
+}
+
+func TestHighlightStaysVisibleWhileScrolling(t *testing.T) {
+	m := shortTerm(picker.New(many(40), nil))
+	for i := 0; i < 40; i++ {
+		if i > 0 {
+			m = apply(t, m, "down")
+		}
+		view := m.View()
+		want := "> [ ] " + fmt.Sprintf("repo%02d", i)
+		if !strings.Contains(stripANSI(view), want) {
+			t.Fatalf("row %d is highlighted but off screen:\n%s", i, view)
+		}
+		if got := lineCount(view); got > 12 {
+			t.Fatalf("view is %d lines at row %d", got, i)
+		}
+	}
+}
+
+func TestScrolledOffRowsAreCounted(t *testing.T) {
+	m := shortTerm(picker.New(many(40), nil))
+	if view := stripANSI(m.View()); !strings.Contains(view, "more below") {
+		t.Errorf("view should say how many rows are hidden below:\n%s", view)
+	}
+	m = apply(t, m, strings.Split(strings.Repeat("down ", 39), " ")[:39]...)
+	if view := stripANSI(m.View()); !strings.Contains(view, "more above") {
+		t.Errorf("view should say how many rows are hidden above:\n%s", view)
+	}
+}
+
+func TestUnsizedPickerStillRendersEveryRow(t *testing.T) {
+	// No WindowSizeMsg has arrived yet on the very first frame; better to
+	// render the lot than to guess a height and hide rows.
+	m := picker.New(many(40), nil)
+	if got := lineCount(m.View()); got < 40 {
+		t.Errorf("view has %d lines, want every row rendered", got)
+	}
+}
+
+func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+
+var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func apply(t *testing.T, m picker.Model, keys ...string) picker.Model {
 	t.Helper()

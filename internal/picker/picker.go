@@ -41,6 +41,7 @@ type Model struct {
 	confirmed bool
 	cancelled bool
 	width     int
+	height    int
 	hasOld    bool // was anything already syncing? drives header visibility
 }
 
@@ -111,6 +112,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -159,9 +161,32 @@ func (m Model) View() string {
 			dimStyle.Render("[q] quit")
 	}
 
+	lines, at := m.body()
+	start, end := m.window(len(lines), at[m.cursor])
+
 	var b strings.Builder
 	b.WriteString(title + "\n\n")
+	if start > 0 {
+		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("%d more above", countRows(at, 0, start))) + "\n")
+	}
+	for _, line := range lines[start:end] {
+		b.WriteString(line + "\n")
+	}
+	if end < len(lines) {
+		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("%d more below", countRows(at, end, len(lines)))) + "\n")
+	}
 
+	b.WriteString("\n" + dimStyle.Render(
+		"[space] toggle   [a] all   [n] none   [enter] save   [q] cancel"))
+	return b.String()
+}
+
+// body renders every row (and its section header) as one line each, and
+// returns where each row landed - lineOf[i] is the line holding row i. The
+// windowing below is done over lines rather than rows because a header, and
+// the blank line before it, take up screen height too.
+func (m Model) body() (lines []string, lineOf []int) {
+	lineOf = make([]int, len(m.rows))
 	current := section(-1)
 	for i, r := range m.rows {
 		// Headers are noise on a first install, where everything is new.
@@ -169,9 +194,9 @@ func (m Model) View() string {
 			current = r.section
 			if m.hasOld {
 				if i > 0 {
-					b.WriteString("\n")
+					lines = append(lines, "")
 				}
-				b.WriteString("  " + dimStyle.Render(sectionLabel[current]) + "\n")
+				lines = append(lines, "  "+dimStyle.Render(sectionLabel[current]))
 			}
 		}
 
@@ -181,15 +206,54 @@ func (m Model) View() string {
 		}
 		line := fmt.Sprintf("%s %-32s %s", box, r.repo.Rel, describe(r.repo, r.section))
 		if i == m.cursor {
-			b.WriteString(selectedStyle.Render("> "+line) + "\n")
+			line = selectedStyle.Render("> " + line)
 		} else {
-			b.WriteString("  " + line + "\n")
+			line = "  " + line
+		}
+		lineOf[i] = len(lines)
+		lines = append(lines, line)
+	}
+	return lines, lineOf
+}
+
+// window is the slice of body lines to draw. It exists because bubbletea's
+// renderer drops lines off the *top* of any view taller than the terminal:
+// an unwindowed list quietly takes the title and the highlighted row with it,
+// which looks exactly like a picker whose cursor and spacebar are dead.
+//
+// Scrolling is by whole pages, keyed off the cursor alone, so there is no
+// scroll offset to keep in sync with the selection - and rows hold still
+// between page turns instead of sliding under a centred cursor.
+func (m Model) window(total, cursorLine int) (start, end int) {
+	// title, its blank line, the blank line and hint below, and one line
+	// spare so the terminal does not scroll on the last row.
+	const chrome = 5
+	avail := m.height - chrome
+	if m.height <= 0 || total <= avail {
+		return 0, total
+	}
+	avail -= 2 // the "more above" / "more below" counters
+	if avail < 1 {
+		avail = 1
+	}
+	start = (cursorLine / avail) * avail
+	end = start + avail
+	if end > total {
+		end = total
+	}
+	return start, end
+}
+
+// countRows is how many rows - not lines - fall in [from, to), so the
+// scrolled-off counters talk about repos and not about headers and blanks.
+func countRows(lineOf []int, from, to int) int {
+	n := 0
+	for _, at := range lineOf {
+		if at >= from && at < to {
+			n++
 		}
 	}
-
-	b.WriteString("\n" + dimStyle.Render(
-		"[space] toggle   [a] all   [n] none   [enter] save   [q] cancel"))
-	return b.String()
+	return n
 }
 
 // describe is the right-hand metadata column. The remote leads it: syncing
