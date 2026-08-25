@@ -190,3 +190,32 @@ func TestToplevel(t *testing.T) {
 		t.Errorf("Toplevel(%q) = %q, want %q", sub, got, repo)
 	}
 }
+
+func TestAheadBehindCountsBothDirections(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("proj")
+
+	ahead, behind, err := gitcmd.AheadBehind(repo, "origin", "main")
+	if err != nil || ahead != 0 || behind != 0 {
+		t.Fatalf("fresh clone: got %d/%d, %v; want 0/0, nil", ahead, behind, err)
+	}
+
+	// One commit here that origin does not have.
+	testutil.Commit(t, sb, repo, "local only")
+	ahead, behind, err = gitcmd.AheadBehind(repo, "origin", "main")
+	if err != nil || ahead != 1 || behind != 0 {
+		t.Fatalf("after a local commit: got %d/%d, %v; want 1/0, nil", ahead, behind, err)
+	}
+
+	// And one on origin that we do not have, putting the two on diverged
+	// histories - the case a fast-forward must refuse.
+	sb.PeerClone("proj")
+	sb.PeerCommit("proj", "remote only")
+	if err := gitcmd.Fetch(repo, "origin"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	ahead, behind, err = gitcmd.AheadBehind(repo, "origin", "main")
+	if err != nil || ahead != 1 || behind != 1 {
+		t.Fatalf("diverged: got %d/%d, %v; want 1/1, nil", ahead, behind, err)
+	}
+}

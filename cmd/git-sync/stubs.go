@@ -34,6 +34,8 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	all := fs.Bool("all", false, "sync every repo found; skip the picker")
 	only := fs.String("repos", "", "comma-separated repos to sync; skips the picker")
 	noPeer := fs.Bool("no-peer", false, "do not provision the peer machine")
+	noInitialSync := fs.Bool("no-initial-sync", false,
+		"do not push/fast-forward the selected repos level with their remotes")
 	selfHost := fs.String("self-host", "", "this machine's hostname, as the peer sees it")
 	selfUser := fs.String("self-user", "", "the account the peer should ssh back into")
 	peerBaseDir := fs.String("peer-base-dir", "", "the peer's sync root (default: same path relative to $HOME)")
@@ -125,7 +127,52 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "install failed:", err)
 		return 1
 	}
+
+	// Stage "level": bring both machines up to the shared remote now that the
+	// hook is armed. A repo that was already out of step stays out of step
+	// forever otherwise - receive only ever fast-forwards, so a single
+	// unpushed commit on either side makes every later sync warn instead of
+	// applying, and nothing retries it.
+	if !*noPeer && !*noInitialSync {
+		levelRepos(config.Config{BaseDir: base, PeerHost: host, PeerUser: user, RemoteNames: cfgRemotes()},
+			*peerBaseDir, repos, stdout, stderr)
+	}
 	return 0
+}
+
+// levelRepos runs the initial synchronisation: measure both machines against
+// the shared remote, say what it will do, then push and fast-forward.
+//
+// Never fatal. The install itself has already succeeded by this point, and a
+// repo that cannot be levelled is a thing the user must fix by hand in the
+// repo - not a reason to leave the machine unconfigured.
+func levelRepos(cfg config.Config, peerBaseDir string, repos []string, stdout, stderr io.Writer) {
+	fmt.Fprintln(stdout, "levelling repos with their remotes")
+	probe, err := setup.Probe(setup.Target(cfg))
+	if err != nil {
+		fmt.Fprintf(stderr, "could not reach %s (%v); skipping the initial sync\n", cfg.PeerHost, err)
+		return
+	}
+	peerBase := setup.PeerBase(cfg.BaseDir, probe.Home, peerBaseDir)
+
+	measured, err := setup.MeasureSync(setup.Target(cfg), peerBase, cfg, repos)
+	if err != nil {
+		fmt.Fprintf(stderr, "could not compare with %s (%v); skipping the initial sync\n", cfg.PeerHost, err)
+		return
+	}
+	if !setup.RenderSyncPlan(stdout, cfg.PeerHost, measured) {
+		return
+	}
+
+	// This is the one point where git-sync pushes commits the user did not
+	// just make, so on a terminal it asks first.
+	if isTTY(stdout) && !confirm(stdout,
+		os.Stdin, "push and fast-forward these now? [enter] yes, [q] skip: ") {
+		fmt.Fprintln(stdout, "skipped; run install again to level them later")
+		return
+	}
+	setup.RenderSyncResult(stdout, cfg.PeerHost,
+		setup.ApplySync(setup.Target(cfg), peerBase, cfg, measured))
 }
 
 // chooseRepos resolves the allowlist: --all and --repos win outright, then the

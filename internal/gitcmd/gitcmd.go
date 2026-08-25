@@ -137,6 +137,26 @@ func FastForward(dir, remote, branch string) error {
 	return err
 }
 
+// AheadBehind counts the commits branch has that remote/branch does not, and
+// the other way round. Both zero means the two are the same commit; both
+// non-zero means they have diverged and only a merge can reconcile them.
+//
+// Reads the remote-tracking ref, so it reports whatever the last fetch saw -
+// call Fetch first for an answer about the remote as it is now.
+func AheadBehind(dir, remote, branch string) (ahead, behind int, err error) {
+	out, err := Run(dir, "rev-list", "--left-right", "--count",
+		remote+"/"+branch+"..."+branch)
+	if err != nil {
+		return 0, 0, err
+	}
+	// git prints "<left>\t<right>": left is remote-only (behind), right is
+	// local-only (ahead).
+	if _, err := fmt.Sscan(out, &behind, &ahead); err != nil {
+		return 0, 0, fmt.Errorf("unreadable rev-list count %q: %w", out, err)
+	}
+	return ahead, behind, nil
+}
+
 // RemoteURL is what the two machines must agree on: same remote name is not
 // enough if they point at different repositories.
 func RemoteURL(dir, remote string) (string, error) {
