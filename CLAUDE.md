@@ -34,6 +34,9 @@ make check          # lint + test — run this before considering anything done
 make install BASE_DIR=~/code   # build then run: ./git-sync install $(BASE_DIR)
 ```
 
+After successfully adding a new feature (checks green), always rebuild the
+binary with `make build` so the checked-in `./git-sync` reflects it.
+
 Single test / package:
 
 ```bash

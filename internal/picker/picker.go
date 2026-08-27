@@ -41,12 +41,18 @@ type row struct {
 // drive it directly.
 type Model struct {
 	rows      []row
-	cursor    int
+	cursor    int // index into the visible (filtered) rows, not into rows
 	confirmed bool
 	cancelled bool
 	width     int
 	height    int
 	hasOld    bool // was anything already syncing? drives header visibility
+	// filtering is the live "/" search mode: keystrokes edit filter instead
+	// of driving the list. filter narrows the visible rows by substring on
+	// the repo path; it never touches which rows are ticked, so Selected()
+	// still sees everything and a filter can't drop a repo from the config.
+	filtering bool
+	filter    string
 }
 
 // New builds the picker from what the scan found and what is already in the
@@ -104,6 +110,40 @@ func (m Model) Selected() []string {
 func (m Model) Confirmed() bool { return m.confirmed }
 func (m Model) Cancelled() bool { return m.cancelled }
 
+// visible is the row indices the filter lets through, in display order. An
+// empty filter shows everything. Matching is a case-insensitive substring on
+// the repo path.
+func (m Model) visible() []int {
+	if m.filter == "" {
+		idx := make([]int, len(m.rows))
+		for i := range m.rows {
+			idx[i] = i
+		}
+		return idx
+	}
+	q := strings.ToLower(m.filter)
+	var idx []int
+	for i, r := range m.rows {
+		if strings.Contains(strings.ToLower(r.repo.Rel), q) {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// realIndex maps the cursor (a position in the visible list) back to a row
+// index, or -1 when nothing is visible.
+func (m Model) realIndex() int {
+	vis := m.visible()
+	if len(vis) == 0 {
+		return -1
+	}
+	if m.cursor >= len(vis) {
+		return vis[len(vis)-1]
+	}
+	return vis[m.cursor]
+}
+
 // RelAt is the repo shown at row i, for tests and for ordering assertions.
 func (m Model) RelAt(i int) string {
 	if i < 0 || i >= len(m.rows) {
@@ -119,15 +159,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case tea.KeyMsg:
+		if m.filtering {
+			return m.updateFiltering(msg)
+		}
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			m.cancelled = true
 			return m, tea.Quit
+		case "/":
+			m.filtering = true
+			return m, nil
 		case "enter":
 			m.confirmed = true
 			return m, tea.Quit
 		case "down", "j":
-			if m.cursor < len(m.rows)-1 {
+			if m.cursor < len(m.visible())-1 {
 				m.cursor++
 			}
 		case "up", "k":
@@ -135,12 +181,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case " ", "space", "x":
-			// A locked row is already installed; toggling it here is a no-op.
-			if len(m.rows) > 0 && !m.rows[m.cursor].locked {
-				rows := append([]row(nil), m.rows...)
-				rows[m.cursor].ticked = !rows[m.cursor].ticked
-				m.rows = rows
-			}
+			m = m.toggleCursor()
 		case "a":
 			rows := append([]row(nil), m.rows...)
 			for i := range rows {
@@ -159,6 +200,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateFiltering handles keystrokes while the "/" search is open. Printable
+// runes edit the query; esc leaves search and clears it, ctrl+w wipes the
+// query but stays in search. The list is still navigable (arrows) and
+// toggleable (space) so you can tick filtered results in place.
+func (m Model) updateFiltering(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.cancelled = true
+		return m, tea.Quit
+	case "esc":
+		m.filtering = false
+		m.filter = ""
+		m.cursor = 0
+		return m, nil
+	case "ctrl+w":
+		m.filter = ""
+		m.cursor = 0
+		return m, nil
+	case "enter":
+		m.confirmed = true
+		return m, tea.Quit
+	case "backspace":
+		if r := []rune(m.filter); len(r) > 0 {
+			m.filter = string(r[:len(r)-1])
+			m.cursor = 0
+		}
+		return m, nil
+	case "up":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		return m, nil
+	case "down":
+		if m.cursor < len(m.visible())-1 {
+			m.cursor++
+		}
+		return m, nil
+	case " ", "space":
+		return m.toggleCursor(), nil
+	}
+	if msg.Type == tea.KeyRunes {
+		m.filter += string(msg.Runes)
+		m.cursor = 0
+	}
+	return m, nil
+}
+
+// toggleCursor flips the ticked state of the row under the cursor, copying the
+// backing array first so saved snapshots stay independent. A locked row is
+// already installed, so toggling it is a no-op.
+func (m Model) toggleCursor() Model {
+	ri := m.realIndex()
+	if ri < 0 || m.rows[ri].locked {
+		return m
+	}
+	rows := append([]row(nil), m.rows...)
+	rows[ri].ticked = !rows[ri].ticked
+	m.rows = rows
+	return m
+}
+
 func (m Model) View() string {
 	title := titleStyle.Render("SELECT REPOS TO SYNC")
 	if len(m.rows) == 0 {
@@ -167,11 +269,25 @@ func (m Model) View() string {
 			dimStyle.Render("[q] quit")
 	}
 
-	lines, at := m.body()
-	start, end := m.window(len(lines), at[m.cursor])
-
 	var b strings.Builder
 	b.WriteString(title + "\n\n")
+	if m.filtering {
+		b.WriteString("  " + selectedStyle.Render("/"+m.filter) + dimStyle.Render(" (esc to clear)") + "\n\n")
+	}
+
+	lines, at := m.body()
+	if len(lines) == 0 {
+		b.WriteString("  " + dimStyle.Render("no repos match") + "\n")
+		b.WriteString("\n" + dimStyle.Render(m.hint()))
+		return b.String()
+	}
+
+	cursorLine := 0
+	if m.cursor < len(at) {
+		cursorLine = at[m.cursor]
+	}
+	start, end := m.window(len(lines), cursorLine)
+
 	if start > 0 {
 		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("%d more above", countRows(at, 0, start))) + "\n")
 	}
@@ -182,12 +298,22 @@ func (m Model) View() string {
 		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("%d more below", countRows(at, end, len(lines)))) + "\n")
 	}
 
-	hint := "[space] toggle   [a] all   [n] none   [enter] save   [q] cancel"
+	b.WriteString("\n" + dimStyle.Render(m.hint()))
+	return b.String()
+}
+
+// hint is the key legend under the list. It changes with the mode: search has
+// its own keys, and there is no point offering [a]/[n] while runes go to the
+// query.
+func (m Model) hint() string {
+	if m.filtering {
+		return "[esc] clear filter   [ctrl+w] wipe query   [space] toggle   [enter] save"
+	}
+	hint := "[space] toggle   [a] all   [n] none   [/] filter   [enter] save   [q] cancel"
 	if m.hasOld {
 		hint += "   (locked repos already sync)"
 	}
-	b.WriteString("\n" + dimStyle.Render(hint))
-	return b.String()
+	return hint
 }
 
 // body renders every row (and its section header) as one line each, and
@@ -195,14 +321,16 @@ func (m Model) View() string {
 // windowing below is done over lines rather than rows because a header, and
 // the blank line before it, take up screen height too.
 func (m Model) body() (lines []string, lineOf []int) {
-	lineOf = make([]int, len(m.rows))
+	vis := m.visible()
+	lineOf = make([]int, len(vis))
 	current := section(-1)
-	for i, r := range m.rows {
+	for pos, ri := range vis {
+		r := m.rows[ri]
 		// Headers are noise on a first install, where everything is new.
 		if r.section != current {
 			current = r.section
 			if m.hasOld {
-				if i > 0 {
+				if pos > 0 {
 					lines = append(lines, "")
 				}
 				lines = append(lines, "  "+dimStyle.Render(sectionLabel[current]))
@@ -221,12 +349,12 @@ func (m Model) body() (lines []string, lineOf []int) {
 			meta = dimStyle.Render("locked · ") + meta
 		}
 		line := fmt.Sprintf("%s %-32s %s", box, r.repo.Rel, meta)
-		if i == m.cursor {
+		if pos == m.cursor {
 			line = selectedStyle.Render("> " + line)
 		} else {
 			line = "  " + line
 		}
-		lineOf[i] = len(lines)
+		lineOf[pos] = len(lines)
 		lines = append(lines, line)
 	}
 	return lines, lineOf
@@ -243,7 +371,10 @@ func (m Model) body() (lines []string, lineOf []int) {
 func (m Model) window(total, cursorLine int) (start, end int) {
 	// title, its blank line, the blank line and hint below, and one line
 	// spare so the terminal does not scroll on the last row.
-	const chrome = 5
+	chrome := 5
+	if m.filtering {
+		chrome += 2 // the "/query" line and its blank line
+	}
 	avail := m.height - chrome
 	if m.height <= 0 || total <= avail {
 		return 0, total

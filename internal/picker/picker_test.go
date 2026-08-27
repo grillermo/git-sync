@@ -336,6 +336,121 @@ func TestUnsizedPickerStillRendersEveryRow(t *testing.T) {
 	}
 }
 
+func esc() tea.KeyMsg     { return tea.KeyMsg{Type: tea.KeyEsc} }
+func ctrlW() tea.KeyMsg   { return tea.KeyMsg{Type: tea.KeyCtrlW} }
+func backspc() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyBackspace} }
+
+func send(t *testing.T, m picker.Model, msgs ...tea.KeyMsg) picker.Model {
+	t.Helper()
+	for _, msg := range msgs {
+		next, _ := m.Update(msg)
+		m = next.(picker.Model)
+	}
+	return m
+}
+
+func TestSlashFiltersTheListLive(t *testing.T) {
+	m := sized(picker.New(found("notes", "work/api", "work/web"), nil))
+	m = apply(t, m, "/", "w", "e", "b")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "work/web") {
+		t.Errorf("filter 'web' should keep work/web:\n%s", view)
+	}
+	if strings.Contains(view, "notes") || strings.Contains(view, "work/api") {
+		t.Errorf("filter 'web' should hide non-matching repos:\n%s", view)
+	}
+}
+
+func TestFilterIsCaseInsensitive(t *testing.T) {
+	m := sized(picker.New(found("Notes", "work/api"), nil))
+	m = apply(t, m, "/", "N", "O")
+	if view := stripANSI(m.View()); !strings.Contains(view, "Notes") {
+		t.Errorf("uppercase query should still match:\n%s", view)
+	}
+}
+
+func TestToggleWhileFilteredTicksTheRightRepo(t *testing.T) {
+	// Filtering must not confuse which row the cursor toggles: space on a
+	// filtered list ticks the visible repo, not whatever was at that index
+	// in the full list.
+	m := sized(picker.New(found("notes", "work/api", "work/web"), nil))
+	m = apply(t, m, "/", "a", "p", "i") // narrows to work/api
+	m = send(t, m, tea.KeyMsg{Type: tea.KeySpace})
+	if got := m.Selected(); len(got) != 1 || got[0] != "work/api" {
+		t.Errorf("Selected() = %v, want [work/api] ticked through the filter", got)
+	}
+}
+
+func TestEscLeavesFilteringAndRestoresFullList(t *testing.T) {
+	m := sized(picker.New(found("notes", "work/api"), nil))
+	m = apply(t, m, "/", "n", "o", "t")
+	m = send(t, m, esc())
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "notes") || !strings.Contains(view, "work/api") {
+		t.Errorf("esc should restore the full list:\n%s", view)
+	}
+	// And a subsequent esc cancels the picker, as it always did.
+	m = send(t, m, esc())
+	if !m.Cancelled() {
+		t.Error("esc outside filtering should cancel the picker")
+	}
+}
+
+func TestCtrlWWipesTheQueryButStaysFiltering(t *testing.T) {
+	m := sized(picker.New(found("notes", "work/api"), nil))
+	m = apply(t, m, "/", "n", "o")
+	m = send(t, m, ctrlW())
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "notes") || !strings.Contains(view, "work/api") {
+		t.Errorf("ctrl+w should clear the query and show everything:\n%s", view)
+	}
+	// Still in filtering mode: a rune edits the query rather than acting as a
+	// command, so typing narrows again.
+	m = apply(t, m, "a", "p", "i")
+	if v := stripANSI(m.View()); strings.Contains(v, "notes") {
+		t.Errorf("still filtering after ctrl+w; typing should narrow:\n%s", v)
+	}
+}
+
+func TestBackspaceEditsTheQuery(t *testing.T) {
+	m := sized(picker.New(found("notes", "work/api"), nil))
+	m = apply(t, m, "/", "n", "o", "z") // 'noz' matches nothing
+	if v := stripANSI(m.View()); !strings.Contains(v, "no repos match") {
+		t.Errorf("'noz' should match nothing:\n%s", v)
+	}
+	m = send(t, m, backspc()) // back to 'no'
+	if v := stripANSI(m.View()); !strings.Contains(v, "notes") {
+		t.Errorf("backspace should widen back to matching notes:\n%s", v)
+	}
+}
+
+func TestFilterDoesNotDropSelectionsOutsideTheQuery(t *testing.T) {
+	// Ticking a repo, then filtering it out of view, must not lose the tick -
+	// the result is written to config.toml.
+	m := sized(picker.New(found("notes", "work/api"), nil))
+	m = apply(t, m, "space")                       // tick notes
+	m = apply(t, m, "/", "a", "p", "i")            // filter to work/api, hiding notes
+	m = send(t, m, tea.KeyMsg{Type: tea.KeySpace}) // tick work/api too
+	m = send(t, m, esc())
+	sel := m.Selected()
+	if len(sel) != 2 || sel[0] != "notes" || sel[1] != "work/api" {
+		t.Errorf("Selected() = %v, want both kept despite filtering", sel)
+	}
+}
+
+func TestEnterWhileFilteringSaves(t *testing.T) {
+	m := sized(picker.New(found("notes", "work/api"), nil))
+	m = apply(t, m, "/", "n", "o")
+	next, cmd := m.Update(key("enter"))
+	m = next.(picker.Model)
+	if !m.Confirmed() {
+		t.Error("enter while filtering should save")
+	}
+	if cmd == nil {
+		t.Error("enter should quit the program")
+	}
+}
+
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
 var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
