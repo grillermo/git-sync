@@ -67,6 +67,41 @@ func TestNewReposComeFirstAndAlreadySyncingArePreTicked(t *testing.T) {
 	}
 }
 
+func TestAlreadySyncingReposAreLockedAndCannotBeUnticked(t *testing.T) {
+	// A repo already installed (in the config) must not be droppable through
+	// the picker: move onto it and try to untick - it stays ticked.
+	m := sized(picker.New(found("zzz-new", "notes"), []string{"notes"}))
+	// notes is the already-syncing row, which sorts after the new one.
+	var at int
+	for i := 0; i < 2; i++ {
+		if m.RelAt(i) == "notes" {
+			at = i
+		}
+	}
+	for i := 0; i < at; i++ {
+		m = apply(t, m, "down")
+	}
+	m = apply(t, m, "space")
+	sel := m.Selected()
+	if len(sel) != 1 || sel[0] != "notes" {
+		t.Errorf("Selected() = %v, want notes still locked on", sel)
+	}
+	if !strings.Contains(stripANSI(m.View()), "locked") {
+		t.Errorf("a locked row should say so:\n%s", m.View())
+	}
+}
+
+func TestNoneKeepsLockedReposTicked(t *testing.T) {
+	// [n] clears the tickable rows but must leave already-installed ones on.
+	m := sized(picker.New(found("new-a", "notes"), []string{"notes"}))
+	m = apply(t, m, "a") // tick everything tickable
+	m = apply(t, m, "n") // then clear
+	sel := m.Selected()
+	if len(sel) != 1 || sel[0] != "notes" {
+		t.Errorf("Selected() = %v, want only the locked repo to survive [n]", sel)
+	}
+}
+
 func TestFirstInstallOmitsSectionHeaders(t *testing.T) {
 	m := sized(picker.New(found("notes", "work/api"), nil))
 	if strings.Contains(m.View(), "ALREADY SYNCING") {

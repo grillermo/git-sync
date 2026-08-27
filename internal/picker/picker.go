@@ -31,6 +31,10 @@ type row struct {
 	repo    scan.Repo
 	section section
 	ticked  bool
+	// locked marks a repo that is already installed (in the config): it stays
+	// ticked and cannot be unticked here, so a re-run only ever adds repos.
+	// Removing one is a deliberate act - edit config.toml or uninstall.
+	locked bool
 }
 
 // Model is the picker. Exported, and free of terminal access, so tests can
@@ -59,7 +63,7 @@ func New(discovered []scan.Repo, selected []string) Model {
 	for _, r := range discovered {
 		seen[r.Rel] = true
 		if inConfig[r.Rel] {
-			syncing = append(syncing, row{repo: r, section: sectionSyncing, ticked: true})
+			syncing = append(syncing, row{repo: r, section: sectionSyncing, ticked: true, locked: true})
 		} else {
 			news = append(news, row{repo: r, section: sectionNew, ticked: false})
 		}
@@ -131,7 +135,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case " ", "space", "x":
-			if len(m.rows) > 0 {
+			// A locked row is already installed; toggling it here is a no-op.
+			if len(m.rows) > 0 && !m.rows[m.cursor].locked {
 				rows := append([]row(nil), m.rows...)
 				rows[m.cursor].ticked = !rows[m.cursor].ticked
 				m.rows = rows
@@ -145,7 +150,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "n":
 			rows := append([]row(nil), m.rows...)
 			for i := range rows {
-				rows[i].ticked = false
+				// Locked rows can never be unticked, not even by "none".
+				rows[i].ticked = rows[i].locked
 			}
 			m.rows = rows
 		}
@@ -176,8 +182,11 @@ func (m Model) View() string {
 		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("%d more below", countRows(at, end, len(lines)))) + "\n")
 	}
 
-	b.WriteString("\n" + dimStyle.Render(
-		"[space] toggle   [a] all   [n] none   [enter] save   [q] cancel"))
+	hint := "[space] toggle   [a] all   [n] none   [enter] save   [q] cancel"
+	if m.hasOld {
+		hint += "   (locked repos already sync)"
+	}
+	b.WriteString("\n" + dimStyle.Render(hint))
 	return b.String()
 }
 
@@ -204,7 +213,14 @@ func (m Model) body() (lines []string, lineOf []int) {
 		if r.ticked {
 			box = "[x]"
 		}
-		line := fmt.Sprintf("%s %-32s %s", box, r.repo.Rel, describe(r.repo, r.section))
+		meta := describe(r.repo, r.section)
+		if r.locked {
+			// Already installed: keep it ticked and say it can't be changed,
+			// while still showing the remote/commit detail beside it.
+			box = "[x]"
+			meta = dimStyle.Render("locked · ") + meta
+		}
+		line := fmt.Sprintf("%s %-32s %s", box, r.repo.Rel, meta)
 		if i == m.cursor {
 			line = selectedStyle.Render("> " + line)
 		} else {
