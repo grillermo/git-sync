@@ -21,10 +21,14 @@ import (
 // machine holding one unpushed commit from last week is enough to cause it,
 // and it never resolves on its own, because receive never pushes.
 //
-// The repair uses only the two operations the steady state already relies on -
-// push, and merge --ff-only - so it can add nothing to history that a normal
-// sync would not. Whatever those two cannot fix is genuinely diverged, and
-// merging is the user's call, not ours.
+// The repair uses mostly the two operations the steady state already relies
+// on - push, and merge --ff-only - so it can add nothing to history that a
+// normal sync would not. The one exception is install-time only: a genuinely
+// diverged default branch, checked out on the diverged side, gets one real
+// merge attempt; a clean merge is pushed and the other side fast-forwards
+// onto it, a conflicting one is aborted and left for the user exactly as
+// before. Steady-state receive never does this - see landMerge and
+// ApplySync for why.
 
 // SyncPos is where one machine's copy of a repo sits relative to the shared
 // remote. Err is set when we could not measure it at all, in which case the
@@ -61,7 +65,9 @@ func (r RepoSync) needsWork() bool {
 
 // blocked reports whether push and fast-forward cannot fix this repo, so the
 // user has to. A branch mismatch counts: the two machines are not meeting on
-// the same branch, and nothing we are willing to do changes that.
+// the same branch, and nothing we are willing to do changes that. Kept as a
+// defensive guard even though both sides now resolve the same remote's
+// default branch the same way, so a mismatch should almost never happen.
 func (r RepoSync) blocked() bool {
 	if !r.Here.ok() || !r.There.ok() {
 		return true
@@ -70,6 +76,16 @@ func (r RepoSync) blocked() bool {
 		return true
 	}
 	return r.Here.Branch != r.There.Branch
+}
+
+// reachable reports whether ApplySync may attempt anything for this repo at
+// all: both sides must be measurable and resolve to the same default branch.
+// Divergence is deliberately not part of this check - since the install-time
+// clean-merge step was added, a diverged repo is still worth attempting,
+// just routed to landMerge (here) or the shell's mirror (on the peer)
+// instead of a plain push or fast-forward.
+func (r RepoSync) reachable() bool {
+	return r.Here.ok() && r.There.ok() && r.Here.Branch == r.There.Branch
 }
 
 // initialSyncMarker opens the remote scripts, so they are identifiable in the
@@ -128,16 +144,24 @@ func MeasureSync(target, peerBase string, cfg config.Config, repos []string) ([]
 }
 
 // measureHere is MeasureSync's local half, mirroring exactly what the remote
-// script does: same remote-resolution rule, same fetch, same counts.
+// script does: same remote-resolution rule, same default-branch resolution,
+// same fetch, same counts. Anchored on the remote's default branch rather
+// than whatever is checked out here - that is where the two machines meet,
+// independent of a feature branch or detached HEAD on either side.
 func measureHere(cfg config.Config, rel string) SyncPos {
 	dir := cfg.RepoPath(rel)
-	branch, err := gitcmd.CurrentBranch(dir)
-	if err != nil {
-		return SyncPos{Err: "detached HEAD"}
-	}
 	remote, err := gitcmd.ResolveRemote(dir, cfg.Remotes())
 	if err != nil {
-		return SyncPos{Branch: branch, Err: "no remote to sync through"}
+		return SyncPos{Err: "no remote to sync through"}
+	}
+	branch, err := gitcmd.DefaultBranch(dir, remote)
+	if err != nil {
+		return SyncPos{Remote: remote, Err: "could not resolve default branch on " + remote}
+	}
+	if !gitcmd.HasLocalBranch(dir, branch) {
+		// A repo with only feature branches and no local default branch is
+		// skipped, never auto-created or checked out.
+		return SyncPos{Branch: branch, Remote: remote, Err: "no local " + branch + " branch"}
 	}
 	if err := gitcmd.Fetch(dir, remote); err != nil {
 		return SyncPos{Branch: branch, Remote: remote, Err: "fetch from " + remote + " failed"}
@@ -156,9 +180,18 @@ func measureHere(cfg config.Config, rel string) SyncPos {
 }
 
 // ApplySync performs the repair: every machine that is purely ahead pushes,
-// then every machine that is purely behind fast-forwards. Deliberately in that
-// order and in two passes - a side can only fast-forward onto what the other
-// side has already pushed.
+// every genuinely diverged machine with its default branch checked out
+// attempts one clean merge, then every machine that is purely behind
+// fast-forwards. Deliberately in that order and across several passes - a
+// side can only fast-forward onto what the other side has already pushed or
+// merged.
+//
+// The clean-merge step is install-time only. Steady-state receive never does
+// this: it stays fast-forward-only forever, because auto-merging there would
+// let both machines mint rival merge commits that never converge, and
+// receive never pushes so it could not fix that itself. Here, only the
+// diverged side ever merges, so the two machines cannot mint rival merges of
+// their own either.
 //
 // Returns the repos as measured again afterwards, so the caller reports what
 // actually happened rather than what was intended.
@@ -167,20 +200,57 @@ func ApplySync(target, peerBase string, cfg config.Config, repos []RepoSync) []R
 	// and still have left the user something to do.
 	notes := map[string]string{}
 
+	// Repos this machine just pushed something new to, whether via a plain
+	// push or a successful merge. Tracked so pass 2 asks the peer about them
+	// even though their pre-repair measurement did not show anything for the
+	// peer to land - a landMerge push is invisible to the stale r.There value.
+	pushedHere := map[string]bool{}
+
 	// Pass 1: this machine publishes, so the peer has something to land on.
 	// A failed push is not handled here: pass 3 re-measures, and a repo that
 	// did not move simply reports as still not level.
 	for _, r := range repos {
-		if !r.blocked() && r.Here.canPush() {
-			_, _ = gitcmd.Push(cfg.RepoPath(r.Rel), r.Here.Remote, r.Here.Branch)
+		if r.reachable() && r.Here.canPush() {
+			if _, err := gitcmd.Push(cfg.RepoPath(r.Rel), r.Here.Remote, r.Here.Branch); err == nil {
+				pushedHere[r.Rel] = true
+			}
+		}
+	}
+
+	// Pass 1b: this machine's genuinely diverged repos attempt one real
+	// merge, but only when the default branch is checked out - merging a
+	// branch that is not HEAD needs a throwaway worktree, not worth it here.
+	// Runs before pass 2, so a clean merge's push is visible when the peer's
+	// ssh round trip asks about the remote.
+	for _, r := range repos {
+		if !r.reachable() || !r.Here.diverged() {
+			continue
+		}
+		dir := cfg.RepoPath(r.Rel)
+		head, _ := gitcmd.CurrentBranch(dir)
+		if head != r.Here.Branch {
+			// Not checked out here: leave it diverged and blocked, exactly as
+			// design decision 5 calls for. Nothing to do without a worktree.
+			continue
+		}
+		note, pushed := landMerge(dir, r.Here.Remote, r.Here.Branch)
+		if pushed {
+			pushedHere[r.Rel] = true
+		}
+		if note != "" {
+			notes[r.Rel] = note
 		}
 	}
 
 	// Pass 2: the peer publishes and lands, in one round trip. It runs after
-	// our push, so its fast-forward sees the commits we just sent.
+	// our push and merge, so its fast-forward (or its own clean merge) sees
+	// the commits we just sent.
 	var peerRepos []RepoSync
 	for _, r := range repos {
-		if !r.blocked() && (r.There.canPush() || r.There.canFF() || r.Here.canPush()) {
+		if !r.reachable() {
+			continue
+		}
+		if r.There.canPush() || r.There.canFF() || r.Here.canPush() || r.There.diverged() || pushedHere[r.Rel] {
 			peerRepos = append(peerRepos, r)
 		}
 	}
@@ -194,11 +264,12 @@ func ApplySync(target, peerBase string, cfg config.Config, repos []RepoSync) []R
 		_, _ = sshOut(target, syncApplyScript(peerBase, rels, cfg.Remotes()))
 	}
 
-	// Pass 3: this machine lands whatever the peer just published. Repos that
-	// only needed a local fast-forward are included, as are those that became
+	// Pass 3: this machine lands whatever the peer just published, including
+	// a merge commit the peer's diverged side just pushed. Repos that only
+	// needed a local fast-forward are included, as are those that became
 	// landable during pass 2.
 	for _, r := range repos {
-		if r.blocked() {
+		if !r.reachable() {
 			continue
 		}
 		dir := cfg.RepoPath(r.Rel)
@@ -210,8 +281,8 @@ func ApplySync(target, peerBase string, cfg config.Config, repos []RepoSync) []R
 		}
 		ahead, behind, err := gitcmd.AheadBehind(dir, r.Here.Remote, r.Here.Branch)
 		if err != nil || behind == 0 || ahead > 0 {
-			// Nothing to land, or diverged - and a diverged tree is never
-			// merged automatically.
+			// Nothing to land, or still diverged - a diverged tree is never
+			// merged automatically here; that was pass 1b's one attempt.
 			continue
 		}
 		if note := landHere(dir, r.Here.Remote, r.Here.Branch); note != "" {
@@ -262,6 +333,46 @@ func landHere(dir, remote, branch string) (note string) {
 		return "fast-forward failed: " + firstLine(err.Error())
 	}
 	return ""
+}
+
+// landMerge attempts the one real merge install-time convergence is allowed
+// to make: dir's default branch, which is genuinely diverged from
+// remote/branch and checked out here, merged with remote/branch. A clean
+// merge is pushed immediately, so pass 2's ssh round trip to the peer sees it
+// as a plain fast-forward rather than a divergence of its own. A conflicting
+// merge is aborted - git-sync never resolves a conflict - and the repo is
+// left diverged and blocked for the user, exactly as it would have been
+// without this step.
+//
+// Stashes first if the tree is dirty and pops unconditionally, mirroring
+// landHere's discipline: a tree stashed here must come back whether or not
+// the merge worked, and a pop failure outranks whatever the merge had to
+// say, because the user needs to know where their uncommitted work went.
+func landMerge(dir, remote, branch string) (note string, pushed bool) {
+	dirty, err := gitcmd.IsDirty(dir)
+	if err != nil {
+		return "could not read the working tree", false
+	}
+	if dirty {
+		if err := gitcmd.Stash(dir); err != nil {
+			return "uncommitted changes could not be stashed, so this repo was left alone", false
+		}
+		defer func() {
+			if err := gitcmd.StashPop(dir); err != nil {
+				note = "your uncommitted changes are safe in `git stash list` " +
+					"but conflicted on the way back - restore them by hand"
+			}
+		}()
+	}
+	if err := gitcmd.Merge(dir, remote, branch); err != nil {
+		_ = gitcmd.MergeAbort(dir)
+		return "history had diverged; the automatic merge conflicted, so it was aborted - " +
+			"merge it by hand, git-sync will not merge for you", false
+	}
+	if _, err := gitcmd.Push(dir, remote, branch); err != nil {
+		return "merged " + branch + " locally but could not push it to " + remote, false
+	}
+	return "", true
 }
 
 func firstLine(s string) string {
@@ -330,8 +441,8 @@ func blockedReason(r RepoSync, peerHost string) string {
 	case !r.There.ok():
 		return "cannot sync this repo on " + peerHost + ": " + r.There.Err
 	case r.Here.Branch != r.There.Branch:
-		return fmt.Sprintf("different branches checked out (%s here, %s on %s); "+
-			"they only sync while both are on the same branch", r.Here.Branch, r.There.Branch, peerHost)
+		return fmt.Sprintf("different branches resolved as default (%s here, %s on %s); "+
+			"they only sync while both resolve to the same default branch", r.Here.Branch, r.There.Branch, peerHost)
 	default:
 		return "history has diverged; merge it by hand, git-sync will not merge for you"
 	}
@@ -440,11 +551,15 @@ func syncMeasureScript(peerBase string, repos, remotePrefs []string) string {
 	return syncScript(peerBase, repos, remotePrefs, "")
 }
 
-// syncApplyScript measures the same way, then pushes if purely ahead and
-// fast-forwards if purely behind - never both, and never a merge.
-// The stash/pop around the merge mirrors landHere, which in turn mirrors
-// receive: a dirty working tree must not be the reason a repo is left
-// unlevelled, and a stashed tree comes back whether or not the merge worked.
+// syncApplyScript measures the same way, then pushes if purely ahead,
+// fast-forwards (or, if the default branch is not checked out, advances the
+// ref directly) if purely behind, and - new - attempts one clean merge if
+// genuinely diverged and the default branch is checked out. Mirrors
+// landMerge: a clean merge is pushed immediately, a conflicting one is
+// aborted and left for the user. The stash/pop around each mutation mirrors
+// landHere, which in turn mirrors receive: a dirty working tree must not be
+// the reason a repo is left unlevelled, and a stashed tree comes back
+// whether or not the merge worked.
 func syncApplyScript(peerBase string, repos, remotePrefs []string) string {
 	return syncScript(peerBase, repos, remotePrefs, `
   if [ "$ahead" -gt 0 ] && [ "$behind" -eq 0 ]; then
@@ -452,12 +567,30 @@ func syncApplyScript(peerBase string, repos, remotePrefs []string) string {
   fi
   git -C "$d" fetch -q "$r" >/dev/null 2>&1 || true
   set -- $(git -C "$d" rev-list --left-right --count "$r/$b...$b")
+  head=$(git -C "$d" symbolic-ref --short HEAD 2>/dev/null)
   if [ "$2" -eq 0 ] && [ "$1" -gt 0 ]; then
+    if [ "$head" = "$b" ]; then
+      stashed=no
+      if [ -n "$(git -C "$d" status --porcelain)" ]; then
+        git -C "$d" stash push -u -m 'git-sync initial sync' >/dev/null 2>&1 && stashed=yes
+      fi
+      git -C "$d" merge --ff-only "$r/$b" >/dev/null 2>&1 || true
+      if [ "$stashed" = yes ] && ! git -C "$d" stash pop >/dev/null 2>&1; then
+        echo "note $rel uncommitted changes are safe in the peer's git stash list but conflicted on the way back"
+      fi
+    else
+      git -C "$d" update-ref "refs/heads/$b" "$r/$b" >/dev/null 2>&1 || true
+    fi
+  elif [ "$2" -gt 0 ] && [ "$1" -gt 0 ] && [ "$head" = "$b" ]; then
     stashed=no
     if [ -n "$(git -C "$d" status --porcelain)" ]; then
       git -C "$d" stash push -u -m 'git-sync initial sync' >/dev/null 2>&1 && stashed=yes
     fi
-    git -C "$d" merge --ff-only "$r/$b" >/dev/null 2>&1 || true
+    if git -C "$d" merge --no-edit "$r/$b" >/dev/null 2>&1; then
+      git -C "$d" push -q "$r" "$b" >/dev/null 2>&1 || true
+    else
+      git -C "$d" merge --abort >/dev/null 2>&1 || true
+    fi
     if [ "$stashed" = yes ] && ! git -C "$d" stash pop >/dev/null 2>&1; then
       echo "note $rel uncommitted changes are safe in the peer's git stash list but conflicted on the way back"
     fi
@@ -465,7 +598,10 @@ func syncApplyScript(peerBase string, repos, remotePrefs []string) string {
 }
 
 // syncScript builds the remote shell shared by measure and apply. `.git` is
-// tested with -e, not -d: in a worktree or a submodule it is a file.
+// tested with -e, not -d: in a worktree or a submodule it is a file. The
+// remote is resolved before the branch, because resolving the default
+// branch needs to know which remote's HEAD to read - the same order
+// measureHere uses.
 func syncScript(peerBase string, repos, remotePrefs []string, act string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\nbase='%s'\nprefs=\"%s\"\nfor rel in",
@@ -476,7 +612,6 @@ func syncScript(peerBase string, repos, remotePrefs []string, act string) string
 	b.WriteString(`; do
   d="$base/$rel"
   if [ ! -e "$d/.git" ]; then echo "err $rel not a git repo on this machine"; continue; fi
-  b=$(git -C "$d" symbolic-ref --short HEAD 2>/dev/null) || { echo "err $rel detached HEAD"; continue; }
   r=""
   for p in $prefs; do
     if git -C "$d" remote get-url "$p" >/dev/null 2>&1; then r="$p"; break; fi
@@ -484,6 +619,14 @@ func syncScript(peerBase string, repos, remotePrefs []string, act string) string
   if [ -z "$r" ] && [ "$(git -C "$d" remote | wc -l | tr -d ' ')" = "1" ]; then r=$(git -C "$d" remote); fi
   if [ -z "$r" ]; then echo "err $rel no remote to sync through"; continue; fi
   if ! git -C "$d" fetch -q "$r" >/dev/null 2>&1; then echo "err $rel fetch from $r failed"; continue; fi
+  b=$(git -C "$d" symbolic-ref --short "refs/remotes/$r/HEAD" 2>/dev/null) \
+    || { git -C "$d" remote set-head "$r" -a >/dev/null 2>&1; \
+         b=$(git -C "$d" symbolic-ref --short "refs/remotes/$r/HEAD" 2>/dev/null); }
+  b=${b#$r/}
+  if [ -z "$b" ]; then echo "err $rel could not resolve default branch"; continue; fi
+  if ! git -C "$d" rev-parse --verify --quiet "refs/heads/$b" >/dev/null; then
+    echo "err $rel no local $b branch"; continue
+  fi
   if ! git -C "$d" rev-parse --verify --quiet "$r/$b" >/dev/null; then
     echo "err $rel $b is not on $r yet"; continue
   fi
