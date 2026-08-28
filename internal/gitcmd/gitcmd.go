@@ -213,7 +213,8 @@ func IsNotFastForward(err error) bool { return errors.Is(err, errNotFastForward)
 
 // FastForwardRef advances a branch that is NOT checked out to <remote>/<branch>
 // without touching the working tree. update-ref refuses nothing on its own, so
-// this checks ancestry first (behind>0 && ahead==0); a plain reset here would
+// this checks ancestry first with merge-base --is-ancestor (true, and a no-op
+// move, when local already equals remote); a plain update-ref here would
 // silently drop commits on a diverged branch.
 func FastForwardRef(dir, remote, branch string) error {
 	if _, err := Run(dir, "merge-base", "--is-ancestor", "refs/heads/"+branch, remote+"/"+branch); err != nil {
@@ -231,6 +232,10 @@ func Merge(dir, remote, branch string) error {
 	return err
 }
 
+// MergeAbort aborts an in-progress merge, restoring HEAD and the working tree
+// to their pre-merge state. Call it even when Merge only partially applied
+// (e.g. some conflicts were resolved already) so a stashed or mid-merge tree
+// is never left half-done.
 func MergeAbort(dir string) error {
 	_, err := Run(dir, "merge", "--abort")
 	return err

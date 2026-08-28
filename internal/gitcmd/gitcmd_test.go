@@ -1,6 +1,7 @@
 package gitcmd_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -263,12 +264,66 @@ func TestFastForwardRefAdvancesNonCheckedOutBranch(t *testing.T) {
 	}
 	before := sb.Git(repo, "rev-parse", "main")
 
-	if err := gitcmd.FastForwardRef(repo, "origin", "main"); err == nil {
+	err := gitcmd.FastForwardRef(repo, "origin", "main")
+	if err == nil {
 		t.Fatal("expected an error on a diverged branch")
+	}
+	if !gitcmd.IsNotFastForward(err) {
+		t.Errorf("err = %v, want a not-fast-forward error", err)
 	}
 	after := sb.Git(repo, "rev-parse", "main")
 	if before != after {
 		t.Errorf("main moved despite divergence: %s -> %s", before, after)
+	}
+}
+
+func TestDefaultBranchUnresolvableRemote(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("a")
+	// A remote whose URL doesn't exist: fetch fails, set-head -a has nothing
+	// to work from, and refs/remotes/ghost/HEAD is never set.
+	sb.Git(repo, "remote", "add", "ghost", filepath.Join(sb.Home, "no-such-remote.git"))
+
+	_, err := gitcmd.DefaultBranch(repo, "ghost")
+	if err == nil {
+		t.Fatal("expected an error for an unresolvable remote")
+	}
+	if !gitcmd.IsNoDefaultBranch(err) {
+		t.Errorf("err = %v, want a no-default-branch error", err)
+	}
+}
+
+func TestMergeConflictThenAbortLeavesTreeClean(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("a")
+
+	// Diverge README.md on both sides, at the same base revision, so the
+	// merge conflicts. PeerCommit deliberately writes to a different file
+	// (PEER.md) to avoid this exact collision, so edit README.md directly.
+	testutil.Commit(t, sb, repo, "local change")
+	peer := sb.PeerClone("a")
+	testutil.AppendFileIn(t, peer, "README.md", "peer change\n")
+	sb.Git(peer, "add", "-A")
+	sb.Git(peer, "commit", "-qm", "peer change")
+	sb.Git(peer, "push", "-q")
+	if err := gitcmd.Fetch(repo, "origin"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := gitcmd.Merge(repo, "origin", "main")
+	if err == nil {
+		t.Fatal("expected a merge conflict")
+	}
+
+	if err := gitcmd.MergeAbort(repo); err != nil {
+		t.Fatalf("MergeAbort: %v", err)
+	}
+
+	if out := sb.Git(repo, "status", "--porcelain"); out != "" {
+		t.Errorf("working tree not clean after MergeAbort:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "MERGE_HEAD")); !os.IsNotExist(err) {
+		t.Errorf("MERGE_HEAD still present after MergeAbort: %v", err)
 	}
 }
 
