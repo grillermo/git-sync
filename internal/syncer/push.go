@@ -38,17 +38,6 @@ func Push(rel string) int {
 
 	dir := cfg.RepoPath(rel)
 
-	// Everything below needs a branch to name on the remote, so a detached
-	// HEAD stops here rather than half-syncing.
-	branch, err := gitcmd.CurrentBranch(dir)
-	if err != nil {
-		_ = activity.Append(activity.Event{
-			Repo: rel, Op: activity.OpPush, Status: activity.StatusSkip,
-			Msg: "detached HEAD, nothing to push",
-		})
-		return 0
-	}
-
 	// The remote is the transport: no remote, no sync, and no point telling
 	// the peer to pull. A warning rather than a skip - the repo is selected,
 	// so the user believes it is syncing and it is not.
@@ -56,7 +45,32 @@ func Push(rel string) int {
 	if err != nil {
 		_ = activity.Append(activity.Event{
 			Repo: rel, Op: activity.OpPush, Status: activity.StatusWarn,
-			Branch: branch, Msg: "no remote to sync through: " + firstLine(err.Error()),
+			Msg: "no remote to sync through: " + firstLine(err.Error()),
+		})
+		return 0
+	}
+
+	// Always the remote's default branch, resolved fresh, never whatever is
+	// checked out here: that is where the two machines meet, independent of a
+	// feature branch or detached HEAD on either side. A commit on a
+	// non-default branch simply leaves this branch unmoved, so pushing it is
+	// a harmless no-op - that is how "non-default branches don't sync" falls
+	// out for free, with no special-case guard needed.
+	branch, err := gitcmd.DefaultBranch(dir, remote)
+	if err != nil {
+		_ = activity.Append(activity.Event{
+			Repo: rel, Op: activity.OpPush, Status: activity.StatusWarn,
+			Msg: "could not resolve default branch on " + remote + ": " + firstLine(err.Error()),
+		})
+		return 0
+	}
+
+	// A repo with only feature branches and no local default branch is
+	// skipped, never auto-created.
+	if !gitcmd.HasLocalBranch(dir, branch) {
+		_ = activity.Append(activity.Event{
+			Repo: rel, Op: activity.OpPush, Status: activity.StatusSkip,
+			Branch: branch, Msg: "no local " + branch + " branch, skipping",
 		})
 		return 0
 	}

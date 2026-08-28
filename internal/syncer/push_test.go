@@ -39,6 +39,10 @@ func TestPushDoesNotNotifyWhenThePushFails(t *testing.T) {
 	repo := sb.MakeRepo("group/proj")
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
 	sb.StubSSH(0)
+	// Cache the default branch while the remote is still reachable, so
+	// breaking the url below fails Push at the actual push step, not earlier
+	// at default-branch resolution.
+	sb.Git(repo, "remote", "set-head", "origin", "-a")
 	sb.Git(repo, "remote", "set-url", "origin", filepath.Join(sb.Home, "gone.git"))
 	testutil.Commit(t, sb, repo, "local change")
 
@@ -156,18 +160,92 @@ func TestPushHonoursAConfiguredRemoteName(t *testing.T) {
 	testutil.AssertEvent(t, activity.OpPush, activity.StatusOK, "gitlab")
 }
 
-func TestPushSkipsDetachedHead(t *testing.T) {
-	// There is no branch to name on the remote.
+// TestPushSendsDefaultBranchWithFeatureCheckedOut: push always targets the
+// remote's default branch, never whatever happens to be checked out.
+func TestPushSendsDefaultBranchWithFeatureCheckedOut(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	repo := sb.MakeRepo("group/proj")
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
 	sb.StubSSH(0)
+
+	testutil.Commit(t, sb, repo, "local change")
+	sb.Git(repo, "checkout", "-q", "-b", "feature")
+
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Fatalf("Push = %d, want 0", code)
+	}
+	if out := sb.Git(repo, "log", "--oneline", "origin/main"); !strings.Contains(out, "local change") {
+		t.Errorf("commit did not reach origin/main:\n%s", out)
+	}
+	testutil.AssertEvent(t, activity.OpPush, activity.StatusOK, "")
+	calls := sb.SSHCalls()
+	if !strings.Contains(calls, "receive 'group/proj'") {
+		t.Errorf("peer not notified: %q", calls)
+	}
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOK, "")
+}
+
+// TestPushOnFeatureBranchPushesNothing: a commit only on a feature branch
+// leaves the default branch unmoved, so pushing it is simply a no-op. That is
+// how "non-default branches don't sync" falls out for free, with no
+// special-case guard.
+func TestPushOnFeatureBranchPushesNothing(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.StubSSH(0)
+
+	sb.Git(repo, "checkout", "-q", "-b", "feature")
+	testutil.Commit(t, sb, repo, "feature-only change")
+
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Fatalf("Push = %d, want 0", code)
+	}
+	if out := sb.Git(repo, "log", "--oneline", "origin/main"); strings.Contains(out, "feature-only change") {
+		t.Errorf("feature commit must not reach origin/main:\n%s", out)
+	}
+	testutil.AssertEvent(t, activity.OpPush, activity.StatusOK, "")
+	testutil.AssertNoEvent(t, activity.OpPush, activity.StatusError)
+}
+
+// TestPushDetachedHeadSyncsDefaultBranch: detached HEAD is no longer an
+// early-return skip - push resolves the default branch independent of what,
+// if anything, is checked out.
+func TestPushDetachedHeadSyncsDefaultBranch(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.StubSSH(0)
+
+	testutil.Commit(t, sb, repo, "local change")
 	sb.Git(repo, "checkout", "-q", "--detach")
 
 	if code := syncer.Push("group/proj"); code != 0 {
 		t.Errorf("Push = %d, want 0", code)
 	}
-	testutil.AssertEvent(t, activity.OpPush, activity.StatusSkip, "detached HEAD")
+	if out := sb.Git(repo, "log", "--oneline", "origin/main"); !strings.Contains(out, "local change") {
+		t.Errorf("commit did not reach origin/main:\n%s", out)
+	}
+	testutil.AssertEvent(t, activity.OpPush, activity.StatusOK, "")
+	if sb.SSHCalls() == "" {
+		t.Error("peer should have been notified")
+	}
+}
+
+// TestPushNoLocalDefaultBranchSkips: a repo with only feature branches and no
+// local main is skipped and reported, never auto-created.
+func TestPushNoLocalDefaultBranchSkips(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.StubSSH(0)
+	sb.Git(repo, "checkout", "-q", "-b", "orphan")
+	sb.Git(repo, "branch", "-D", "main")
+
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Errorf("Push = %d, want 0", code)
+	}
+	testutil.AssertEvent(t, activity.OpPush, activity.StatusSkip, "no local main branch")
 	if sb.SSHCalls() != "" {
 		t.Error("nothing was pushed, so there is nothing for the peer to pull")
 	}
