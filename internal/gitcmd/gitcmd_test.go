@@ -191,6 +191,99 @@ func TestToplevel(t *testing.T) {
 	}
 }
 
+func TestDefaultBranchFromCloneHead(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("a")
+
+	got, err := gitcmd.DefaultBranch(repo, "origin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "main" {
+		t.Errorf("DefaultBranch = %q, want %q", got, "main")
+	}
+}
+
+func TestDefaultBranchAfterRemoteRename(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepoNamedRemote("a", "github")
+
+	got, err := gitcmd.DefaultBranch(repo, "github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "main" {
+		t.Errorf("DefaultBranch = %q, want %q", got, "main")
+	}
+}
+
+func TestDefaultBranchSetHeadFallback(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("a")
+	sb.AddRemote(t, repo, "github", "a")
+
+	got, err := gitcmd.DefaultBranch(repo, "github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "main" {
+		t.Errorf("DefaultBranch = %q, want %q", got, "main")
+	}
+}
+
+func TestFastForwardRefAdvancesNonCheckedOutBranch(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("a")
+	sb.Git(repo, "checkout", "-qb", "feature")
+
+	sb.PeerClone("a")
+	sb.PeerCommit("a", "from-peer")
+	if err := gitcmd.Fetch(repo, "origin"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := gitcmd.FastForwardRef(repo, "origin", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if out := sb.Git(repo, "log", "--oneline", "main"); !strings.Contains(out, "from-peer") {
+		t.Errorf("local main was not advanced:\n%s", out)
+	}
+	if branch, err := gitcmd.CurrentBranch(repo); err != nil || branch != "feature" {
+		t.Errorf("current branch = %q, %v; worktree should not move off feature", branch, err)
+	}
+
+	// Now diverge: a local commit on main that origin does not have, plus a
+	// new commit on origin/main it makes from here.
+	sb.Git(repo, "checkout", "-q", "main")
+	testutil.Commit(t, sb, repo, "local only")
+	sb.Git(repo, "checkout", "-q", "feature")
+	sb.PeerCommit("a", "another-from-peer")
+	if err := gitcmd.Fetch(repo, "origin"); err != nil {
+		t.Fatal(err)
+	}
+	before := sb.Git(repo, "rev-parse", "main")
+
+	if err := gitcmd.FastForwardRef(repo, "origin", "main"); err == nil {
+		t.Fatal("expected an error on a diverged branch")
+	}
+	after := sb.Git(repo, "rev-parse", "main")
+	if before != after {
+		t.Errorf("main moved despite divergence: %s -> %s", before, after)
+	}
+}
+
+func TestHasLocalBranch(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("a")
+
+	if !gitcmd.HasLocalBranch(repo, "main") {
+		t.Error("main is a local branch")
+	}
+	if gitcmd.HasLocalBranch(repo, "no-such-branch") {
+		t.Error("no-such-branch does not exist")
+	}
+}
+
 func TestAheadBehindCountsBothDirections(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	repo := sb.MakeRepo("proj")

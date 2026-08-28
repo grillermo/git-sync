@@ -163,6 +163,79 @@ func RemoteURL(dir, remote string) (string, error) {
 	return Run(dir, "remote", "get-url", remote)
 }
 
+var errNoDefaultBranch = errors.New("no default branch")
+
+// IsNoDefaultBranch reports whether err means the remote's default branch
+// could not be resolved. Distinct from IsNoRemote: the remote is fine, its
+// HEAD just isn't known and couldn't be fetched.
+func IsNoDefaultBranch(err error) bool { return errors.Is(err, errNoDefaultBranch) }
+
+// DefaultBranch returns the remote's default branch (bare, e.g. "main"),
+// resolved once and cached in refs/remotes/<remote>/HEAD. This is where the
+// two machines meet, independent of what is checked out on either side.
+func DefaultBranch(dir, remote string) (string, error) {
+	if b, err := headRef(dir, remote); err == nil {
+		return b, nil
+	}
+	// refs/remotes/<remote>/HEAD is set by clone and remote rename but not by
+	// a bare `remote add`; fetch so the remote's branches exist locally, then
+	// ask the remote which one is default and cache it.
+	_, _ = Run(dir, "fetch", remote)
+	_, _ = Run(dir, "remote", "set-head", remote, "-a")
+	b, err := headRef(dir, remote)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s on %s", errNoDefaultBranch, remote, dir)
+	}
+	return b, nil
+}
+
+func headRef(dir, remote string) (string, error) {
+	out, err := Run(dir, "symbolic-ref", "--short", "refs/remotes/"+remote+"/HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(out, remote+"/"), nil
+}
+
+// HasLocalBranch reports whether the repo has a local branch of this name.
+// A repo with only feature branches and no local default branch is skipped,
+// never auto-created.
+func HasLocalBranch(dir, branch string) bool {
+	_, err := Run(dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
+}
+
+var errNotFastForward = errors.New("not a fast-forward")
+
+// IsNotFastForward reports whether err means FastForwardRef refused to move
+// the ref because local history is not an ancestor of the remote's.
+func IsNotFastForward(err error) bool { return errors.Is(err, errNotFastForward) }
+
+// FastForwardRef advances a branch that is NOT checked out to <remote>/<branch>
+// without touching the working tree. update-ref refuses nothing on its own, so
+// this checks ancestry first (behind>0 && ahead==0); a plain reset here would
+// silently drop commits on a diverged branch.
+func FastForwardRef(dir, remote, branch string) error {
+	if _, err := Run(dir, "merge-base", "--is-ancestor", "refs/heads/"+branch, remote+"/"+branch); err != nil {
+		return fmt.Errorf("%w: refs/heads/%s is not an ancestor of %s/%s", errNotFastForward, branch, remote, branch)
+	}
+	_, err := Run(dir, "update-ref", "refs/heads/"+branch, remote+"/"+branch)
+	return err
+}
+
+// Merge performs a real (non-ff) merge of <remote>/<branch> into HEAD. Used
+// only by install-time convergence, never by receive. Returns an error on
+// conflicts; the caller then MergeAbort()s.
+func Merge(dir, remote, branch string) error {
+	_, err := Run(dir, "merge", "--no-edit", remote+"/"+branch)
+	return err
+}
+
+func MergeAbort(dir string) error {
+	_, err := Run(dir, "merge", "--abort")
+	return err
+}
+
 func Stash(dir string) error {
 	_, err := Run(dir, "stash", "push", "-u", "-m", "git-sync auto-stash")
 	return err
