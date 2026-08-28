@@ -13,20 +13,147 @@ import (
 	"github.com/grillermo/git-sync/internal/testutil"
 )
 
-func TestReceiveFastForwardsACleanTree(t *testing.T) {
+// TestReceiveFastForwardsDefaultBranchWhenItIsCheckedOut covers the default
+// branch (main) as HEAD: a clean tree goes through a stash-free
+// `merge --ff-only`, a dirty tree goes through the stash/pop dance and comes
+// back restored either way.
+func TestReceiveFastForwardsDefaultBranchWhenItIsCheckedOut(t *testing.T) {
+	t.Run("clean", func(t *testing.T) {
+		sb := testutil.NewSandbox(t)
+		repo := sb.MakeRepo("group/proj")
+		testutil.SaveConfig(t, sb, "peer.example", "tester")
+		sb.PeerClone("group/proj")
+		sb.PeerCommit("group/proj", "from-peer")
+
+		if code := syncer.Receive("group/proj"); code != 0 {
+			t.Fatalf("Receive = %d, want 0", code)
+		}
+		if out := sb.Git(repo, "log", "--oneline"); !strings.Contains(out, "from-peer") {
+			t.Errorf("did not fast-forward:\n%s", out)
+		}
+		testutil.AssertEvent(t, activity.OpReceive, activity.StatusOK, "fast-forward")
+		testutil.AssertNoEvent(t, activity.OpReceive, activity.StatusWarn)
+	})
+
+	t.Run("dirty", func(t *testing.T) {
+		sb := testutil.NewSandbox(t)
+		repo := sb.MakeRepo("group/proj")
+		testutil.SaveConfig(t, sb, "peer.example", "tester")
+		sb.PeerClone("group/proj")
+		sb.PeerCommit("group/proj", "from-peer")
+		sb.Dirty(repo)
+
+		if code := syncer.Receive("group/proj"); code != 0 {
+			t.Fatalf("Receive = %d, want 0", code)
+		}
+		if out := sb.Git(repo, "log", "--oneline"); !strings.Contains(out, "from-peer") {
+			t.Error("should have fast-forwarded")
+		}
+		// Both the tracked edit and the untracked file must be back.
+		testutil.AssertFileContains(t, filepath.Join(repo, "NOTES.md"), "work in progress")
+		testutil.AssertFileContains(t, filepath.Join(repo, "README.md"), "uncommitted edit")
+		if out := sb.Git(repo, "stash", "list"); out != "" {
+			t.Errorf("nothing should be left in the stash, got:\n%s", out)
+		}
+	})
+}
+
+// TestReceiveFastForwardsDefaultBranchWithFeatureCheckedOut is the case the
+// old CurrentBranch anchor could never handle: the peer pushed to main, but
+// this machine has a feature branch checked out. Receive must still advance
+// local main - via FastForwardRef's update-ref, never touching the worktree
+// or the checked-out feature branch.
+func TestReceiveFastForwardsDefaultBranchWithFeatureCheckedOut(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.PeerClone("group/proj")
+	sb.PeerCommit("group/proj", "from-peer")
+	sb.Git(repo, "checkout", "-q", "-b", "feature")
+
+	if code := syncer.Receive("group/proj"); code != 0 {
+		t.Fatalf("Receive = %d, want 0", code)
+	}
+	if out := sb.Git(repo, "log", "--oneline", "main"); !strings.Contains(out, "from-peer") {
+		t.Errorf("local main did not fast-forward:\n%s", out)
+	}
+	if out := strings.TrimSpace(sb.Git(repo, "branch", "--show-current")); out != "feature" {
+		t.Errorf("feature branch should remain checked out, got %q", out)
+	}
+	if out := sb.Git(repo, "status", "--porcelain"); out != "" {
+		t.Errorf("worktree should be untouched, got:\n%s", out)
+	}
+	testutil.AssertEvent(t, activity.OpReceive, activity.StatusOK, "fast-forward")
+}
+
+// TestReceiveDetachedHeadStillSyncsDefaultBranch: a detached HEAD used to
+// abort the whole sync via CurrentBranch's error. Now that main - not
+// whatever is checked out - is the anchor, a detached HEAD is no different
+// from any other non-default checkout: main still advances.
+func TestReceiveDetachedHeadStillSyncsDefaultBranch(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.PeerClone("group/proj")
+	sb.PeerCommit("group/proj", "from-peer")
+	sb.Git(repo, "checkout", "-q", "--detach")
+
+	if code := syncer.Receive("group/proj"); code != 0 {
+		t.Errorf("Receive = %d, want 0", code)
+	}
+	if out := sb.Git(repo, "log", "--oneline", "main"); !strings.Contains(out, "from-peer") {
+		t.Errorf("local main did not advance:\n%s", out)
+	}
+	testutil.AssertEvent(t, activity.OpReceive, activity.StatusOK, "fast-forward")
+}
+
+// TestReceiveDivergedDefaultBranchWarnsNoAutoMerge: receive stays
+// fast-forward-only in steady state, even though the branch is not checked
+// out here - auto-merging is install-only (a later task), never receive's
+// job, or two machines could each mint a rival merge commit and never
+// converge.
+func TestReceiveDivergedDefaultBranchWarnsNoAutoMerge(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	repo := sb.MakeRepo("group/proj")
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
 	sb.PeerClone("group/proj")
 	sb.PeerCommit("group/proj", "from-peer")
 
+	// Diverge main locally, then check out a feature branch: the warn path
+	// must not depend on what happens to be checked out.
+	testutil.WriteFileIn(t, repo, "OTHER.md", "local\n")
+	sb.Git(repo, "add", "-A")
+	sb.Git(repo, "commit", "-qm", "divergent local commit")
+	localMain := strings.TrimSpace(sb.Git(repo, "rev-parse", "main"))
+	sb.Git(repo, "checkout", "-q", "-b", "feature")
+
 	if code := syncer.Receive("group/proj"); code != 0 {
 		t.Fatalf("Receive = %d, want 0", code)
 	}
-	if out := sb.Git(repo, "log", "--oneline"); !strings.Contains(out, "from-peer") {
-		t.Errorf("did not fast-forward:\n%s", out)
+	testutil.AssertEvent(t, activity.OpReceive, activity.StatusWarn, "manual merge needed")
+	if out := strings.TrimSpace(sb.Git(repo, "rev-parse", "main")); out != localMain {
+		t.Errorf("main should not have moved: got %s want %s", out, localMain)
 	}
-	testutil.AssertEvent(t, activity.OpReceive, activity.StatusOK, "fast-forward")
+	// The fetch still happened, so the user can merge by hand.
+	if out := sb.Git(repo, "log", "--oneline", "origin/main"); !strings.Contains(out, "from-peer") {
+		t.Error("should still have fetched")
+	}
+}
+
+// TestReceiveNoLocalDefaultBranchSkips: a repo with only feature branches and
+// no local main is skipped and reported, never auto-created.
+func TestReceiveNoLocalDefaultBranchSkips(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.Git(repo, "checkout", "-q", "-b", "orphan")
+	sb.Git(repo, "branch", "-D", "main")
+
+	if code := syncer.Receive("group/proj"); code != 0 {
+		t.Errorf("Receive = %d, want 0", code)
+	}
+	testutil.AssertEvent(t, activity.OpReceive, activity.StatusSkip, "no local main branch")
+	testutil.AssertNoEvent(t, activity.OpReceive, activity.StatusWarn)
 }
 
 func TestReceiveIsAHarmlessNoOpWhenUpToDate(t *testing.T) {
@@ -41,28 +168,6 @@ func TestReceiveIsAHarmlessNoOpWhenUpToDate(t *testing.T) {
 		t.Errorf("working tree should be untouched, got:\n%s", out)
 	}
 	testutil.AssertNoEvent(t, activity.OpReceive, activity.StatusWarn)
-}
-
-func TestReceiveStashesFastForwardsAndRestores(t *testing.T) {
-	sb := testutil.NewSandbox(t)
-	repo := sb.MakeRepo("group/proj")
-	testutil.SaveConfig(t, sb, "peer.example", "tester")
-	sb.PeerClone("group/proj")
-	sb.PeerCommit("group/proj", "from-peer")
-	sb.Dirty(repo)
-
-	if code := syncer.Receive("group/proj"); code != 0 {
-		t.Fatalf("Receive = %d, want 0", code)
-	}
-	if out := sb.Git(repo, "log", "--oneline"); !strings.Contains(out, "from-peer") {
-		t.Error("should have fast-forwarded")
-	}
-	// Both the tracked edit and the untracked file must be back.
-	testutil.AssertFileContains(t, filepath.Join(repo, "NOTES.md"), "work in progress")
-	testutil.AssertFileContains(t, filepath.Join(repo, "README.md"), "uncommitted edit")
-	if out := sb.Git(repo, "stash", "list"); out != "" {
-		t.Errorf("nothing should be left in the stash, got:\n%s", out)
-	}
 }
 
 func TestReceiveRestoresTheStashEvenWhenHistoryDiverged(t *testing.T) {
@@ -165,31 +270,6 @@ func TestReceiveSyncsAWorktreeWhereDotGitIsAFile(t *testing.T) {
 	if code := syncer.Receive("group/proj-wt"); code == syncer.ExitRepoNotHere {
 		t.Error("a linked worktree is a real repo")
 	}
-}
-
-func TestReceiveSkipsDetachedHead(t *testing.T) {
-	sb := testutil.NewSandbox(t)
-	repo := sb.MakeRepo("group/proj")
-	testutil.SaveConfig(t, sb, "peer.example", "tester")
-	sb.Git(repo, "checkout", "-q", "--detach")
-
-	if code := syncer.Receive("group/proj"); code != 0 {
-		t.Errorf("Receive = %d, want 0", code)
-	}
-	testutil.AssertEvent(t, activity.OpReceive, activity.StatusSkip, "detached HEAD")
-}
-
-func TestReceiveSkipsABranchTheRemoteDoesNotHave(t *testing.T) {
-	sb := testutil.NewSandbox(t)
-	repo := sb.MakeRepo("group/proj")
-	testutil.SaveConfig(t, sb, "peer.example", "tester")
-	sb.Git(repo, "checkout", "-q", "-b", "orphan")
-
-	if code := syncer.Receive("group/proj"); code != 0 {
-		t.Errorf("Receive = %d, want 0", code)
-	}
-	testutil.AssertEvent(t, activity.OpReceive, activity.StatusSkip, "not on the remote")
-	testutil.AssertNoEvent(t, activity.OpReceive, activity.StatusWarn)
 }
 
 func TestReceivePullsFromTheSameRemotePushUsed(t *testing.T) {

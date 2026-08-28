@@ -71,7 +71,10 @@ func Receive(rel string) int {
 	return syncRepo(cfg, rel, dir)
 }
 
-// syncRepo is the spec's algorithm, inside the lock.
+// syncRepo is the spec's algorithm, inside the lock. It anchors to the
+// remote's default branch, resolved fresh every call, rather than whatever is
+// checked out here: that is where the two machines meet, independent of a
+// feature branch or detached HEAD on either side.
 func syncRepo(cfg config.Config, rel, dir string) int {
 	log := func(s activity.Status, branch, msg string) {
 		_ = activity.Append(activity.Event{
@@ -79,19 +82,26 @@ func syncRepo(cfg config.Config, rel, dir string) int {
 		})
 	}
 
-	branch, err := gitcmd.CurrentBranch(dir)
-	if err != nil {
-		log(activity.StatusSkip, "", "detached HEAD, skipping")
-		return 0
-	}
-
 	// Resolve the remote by the same rule push used, rather than following
-	// this branch's @{upstream}: the upstream may point at a different remote
+	// any branch's @{upstream}: the upstream may point at a different remote
 	// from the one the commits were pushed to, and then we would fetch a
 	// repository the peer never wrote to and report "up to date" forever.
 	remote, err := gitcmd.ResolveRemote(dir, cfg.Remotes())
 	if err != nil {
-		log(activity.StatusWarn, branch, "no remote to sync through: "+firstLine(err.Error()))
+		log(activity.StatusWarn, "", "no remote to sync through: "+firstLine(err.Error()))
+		return 0
+	}
+
+	branch, err := gitcmd.DefaultBranch(dir, remote)
+	if err != nil {
+		log(activity.StatusWarn, "", "could not resolve default branch on "+remote+": "+firstLine(err.Error()))
+		return 0
+	}
+
+	// A repo with only feature branches and no local default branch is
+	// skipped, never auto-created or checked out.
+	if !gitcmd.HasLocalBranch(dir, branch) {
+		log(activity.StatusSkip, branch, "no local "+branch+" branch, skipping")
 		return 0
 	}
 
@@ -100,14 +110,58 @@ func syncRepo(cfg config.Config, rel, dir string) int {
 		return 0
 	}
 
-	// Checked before the merge: a missing remote-tracking ref would otherwise
-	// fail the merge and be misreported as "diverged". Normal when the two
-	// machines have different branches checked out.
+	// Checked before measuring: a missing remote-tracking ref would otherwise
+	// fail ahead/behind and be misreported as "diverged". Normal when the
+	// remote's default branch was renamed or removed since the last clone.
 	if !gitcmd.HasRemoteBranch(dir, remote, branch) {
 		log(activity.StatusSkip, branch, branch+" is not on the remote "+remote+", skipping")
 		return 0
 	}
 
+	ahead, behind, err := gitcmd.AheadBehind(dir, remote, branch)
+	if err != nil {
+		log(activity.StatusError, branch, "could not compare with "+remote+"/"+branch+": "+firstLine(err.Error()))
+		return 0
+	}
+
+	if behind == 0 {
+		log(activity.StatusOK, branch, branch+" already up to date with "+remote)
+		return 0
+	}
+
+	if ahead > 0 {
+		// The fetch already updated the remote-tracking refs, so the user has
+		// everything they need locally to merge by hand. Receive stays
+		// fast-forward-only in steady state: auto-merging here would let
+		// both machines mint rival merge commits that never converge, and
+		// receive never pushes so it could not fix that itself.
+		log(activity.StatusWarn, branch, "diverged from "+remote+"/"+branch+
+			", fetched only, manual merge needed")
+		return 0
+	}
+
+	head, _ := gitcmd.CurrentBranch(dir) // "" on detached HEAD
+	if head != branch {
+		// Not checked out here: advance the ref directly. No worktree, so no
+		// stash is ever needed.
+		if err := gitcmd.FastForwardRef(dir, remote, branch); err != nil {
+			// AheadBehind already established ahead==0, so this should
+			// always succeed; IsNotFastForward is a defensive fallback in
+			// case the local branch moved between the two checks, and it
+			// gets the same "manual merge" wording divergence does elsewhere.
+			if gitcmd.IsNotFastForward(err) {
+				log(activity.StatusWarn, branch, "diverged from "+remote+"/"+branch+
+					", fetched only, manual merge needed")
+			} else {
+				log(activity.StatusError, branch, "could not fast-forward "+branch+": "+firstLine(err.Error()))
+			}
+		} else {
+			log(activity.StatusOK, branch, "fast-forwarded "+branch+" from "+remote)
+		}
+		return 0
+	}
+
+	// The default branch is checked out here: the stash/merge/pop dance.
 	// Ask git directly whether the tree is dirty. Never infer it from a
 	// pull's exit code, which cannot tell a dirty tree from diverged history.
 	dirty, err := gitcmd.IsDirty(dir)
@@ -125,11 +179,11 @@ func syncRepo(cfg config.Config, rel, dir string) int {
 		log(activity.StatusOK, branch, "stashed dirty working tree")
 	}
 
+	// ahead==0 && behind>0 was already established above, so this merge is
+	// guaranteed to be a fast-forward; a failure here is a genuine error, not
+	// a divergence.
 	if err := gitcmd.FastForward(dir, remote, branch); err != nil {
-		// The fetch already updated the remote-tracking refs, so the user has
-		// everything they need locally to merge by hand.
-		log(activity.StatusWarn, branch, "diverged from "+remote+"/"+branch+
-			", fetched only, manual merge needed")
+		log(activity.StatusError, branch, "fast-forward merge failed: "+firstLine(err.Error()))
 	} else {
 		log(activity.StatusOK, branch, "fast-forwarded "+branch+" from "+remote)
 	}
