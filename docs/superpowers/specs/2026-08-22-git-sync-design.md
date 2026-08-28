@@ -547,7 +547,7 @@ data source for `report`:
 
 - `ok` — it worked.
 - `skip` — deliberately did nothing. Routine, not a problem: a repo the peer
-  lacks, a detached HEAD, nothing to fast-forward.
+  lacks, no local copy of the default branch, nothing to fast-forward.
 - `warn` — needs a human eventually: diverged history, a conflicting stash pop.
 - `error` — it failed.
 
