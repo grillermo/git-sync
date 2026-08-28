@@ -120,13 +120,23 @@ Package layering, leaves to composition:
     `core.hooksPath`), but only *acts* on repos in the allowlist. Must do
     almost nothing itself — git waits on this process — so it identifies the
     repo and re-execs itself detached as `push`.
-  - `push.go`: pushes the current branch to the resolved remote, then SSHes
-    the peer to run its own `receive`. No retry queue by design — a failed
-    push or unreachable peer just gets carried by the next commit.
-  - `receive.go`: locks, fetches, stashes if dirty, fast-forwards, unstashes
-    — unconditionally, whether or not the fast-forward succeeded, so a
-    stashed tree is never silently lost. Never commits or pushes itself, so
-    there's no feedback loop back to the peer's hook.
+  - `push.go`: pushes the remote's **default branch** (`gitcmd.DefaultBranch`,
+    resolved fresh every call), not whatever is checked out, to the resolved
+    remote, then SSHes the peer to run its own `receive`. A commit on any
+    other branch leaves the default branch unmoved, so pushing it is a
+    harmless no-op — that's how "non-default branches don't sync" falls out
+    for free instead of needing a guard. No local default branch is a skip,
+    never auto-created. No retry queue by design — a failed push or
+    unreachable peer just gets carried by the next commit.
+  - `receive.go`: locks, fetches, and fast-forwards the local **default
+    branch** — the same one push targets, regardless of what's checked out
+    here. If the default branch is checked out, it's the familiar
+    stash-if-dirty / `merge --ff-only` / unstash-unconditionally dance; if
+    it's not checked out, `gitcmd.FastForwardRef` advances the ref directly
+    with no stash needed, since there's no worktree to disturb. Diverged
+    history is always `StatusWarn`, fetched-only, manual-merge-needed —
+    receive itself never auto-merges, in either case. Never commits or
+    pushes itself, so there's no feedback loop back to the peer's hook.
 - **`internal/scan`** / **`internal/picker`** — repo discovery under
   `base_dir` and the bubbletea checkbox TUI for choosing which to sync.
 - **`internal/setup`** — `install.go` (local install/uninstall — copies the
@@ -136,19 +146,32 @@ Package layering, leaves to composition:
   the same remote — a mismatched pair silently never converges otherwise),
   `sshauth.go` (detects a password-only peer, prompts once, verifies against
   the peer, stores in the keychain before anything else happens),
-  `initialsync.go` (the last install stage: measures both machines against
-  the shared remote, then pushes whichever side is purely ahead and
-  fast-forwards whichever is purely behind).
+  `initialsync.go` (the last install stage: measures both machines' **default
+  branch**, resolved the same way push/receive do, against the shared remote,
+  then pushes whichever side is purely ahead and fast-forwards whichever is
+  purely behind).
 
   `initialsync.go` exists because `receive` only ever fast-forwards. One
   unpushed commit sitting on either machine at install time makes every
   later sync warn instead of applying, forever, and nothing retries it —
-  `receive` never pushes, so the divergence cannot resolve itself. It uses
-  only push and `merge --ff-only`, stashing around the merge exactly as
-  `receive` does, so it can never add anything to history a normal sync
-  would not. Genuinely diverged history, and two machines on different
-  branches, are reported for the user to merge by hand — never merged
-  automatically. `--no-initial-sync` skips the stage.
+  `receive` never pushes, so the divergence cannot resolve itself. Passes 1–3
+  use only push and `merge --ff-only`, stashing around the merge exactly as
+  `receive` does, so they can never add anything to history a normal sync
+  would not. On top of that, install (and only install) will attempt **one
+  real merge** on a genuinely diverged repo: `landMerge` merges
+  `<remote>/<branch>` into the diverged side, only when the default branch is
+  the checked-out HEAD there (a not-checked-out diverged branch has no
+  worktree to merge into, so it's reported blocked instead); a clean merge is
+  pushed and the other side then fast-forwards onto it in pass 3, a
+  conflicting merge is `git merge --abort`ed and the repo is reported for the
+  user to merge by hand, same as before. `syncApplyScript` mirrors this
+  exact logic in shell for the case where the *peer* is the diverged side. No
+  local default branch (only feature branches checked out, nothing named
+  `main`/`master`/`trunk` locally) is reported and skipped, never
+  auto-created. Two machines resolving to different branch names is kept as a
+  defensive guard but should no longer fire in practice, since both sides now
+  resolve the same remote's default branch. `--no-initial-sync` skips the
+  whole stage.
 - **`internal/secret`** / **`internal/sshx`** — the peer's ssh password (OS
   keychain via `security`/`libsecret`, or `file`/`blackhole` backends for
   tests) and the ssh command builder that wires `SSH_ASKPASS` in only when a
@@ -177,6 +200,22 @@ for the same non-racing reason), `askpass`, `config.toml`, `activity.jsonl`,
 - Nothing in the sync path may ever block on a terminal prompt — the hook
   and its children run detached with no tty. This is the entire reason the
   password/keychain machinery in `setup`/`secret`/`sshx` exists.
+- **Every sync operation targets the remote's default branch**
+  (`gitcmd.DefaultBranch`, resolved per repo — `main`, `master`, `trunk`,
+  whatever the remote's `HEAD` says), never whatever happens to be checked
+  out locally. A commit on any other branch leaves the default branch
+  unmoved, so it simply doesn't sync — there is no separate guard for "only
+  the default branch syncs," it falls out of this rule for free.
+- **Auto-merge is install-time-only, and only on a clean merge.** Steady-state
+  `receive` stays fast-forward-only forever — diverged history there is
+  always reported and left for the user, never merged, because two machines
+  each auto-merging would mint rival merge commits that re-diverge forever
+  and `receive` never pushes so it couldn't fix that itself. The one
+  exception: `install`'s initial sync may resolve a genuinely diverged
+  default branch with a single real merge, but only on the diverged side,
+  only once, only when the default branch is checked out there, and only if
+  the merge is clean — a conflict is always `git merge --abort`ed and
+  reported for the user exactly as an unresolved divergence always has been.
 
 ## Dependency pins (Go 1.26)
 

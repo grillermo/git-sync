@@ -304,6 +304,67 @@ func TestEndToEndSyncsThroughAGithubNamedRemote(t *testing.T) {
 	assertHasEvent(t, peer.events(t), activity.OpReceive, activity.StatusOK, "github")
 }
 
+// TestEndToEndFeatureBranchCheckedOutBothSidesConvergesDefaultBranch exercises
+// the default-branch-anchoring rework end to end: both machines have a
+// feature branch checked out, a commit lands on main while it is not the
+// checked-out branch on either side, and the real loopback-ssh round trip
+// (push -> notify -> receive) still converges main without ever touching
+// either machine's checked-out feature branch or working tree.
+func TestEndToEndFeatureBranchCheckedOutBothSidesConvergesDefaultBranch(t *testing.T) {
+	bin := buildBinary(t)
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peerhost", "peeruser")
+
+	peer := newPeerMachine(t, bin)
+	peerRepo := peer.clone(t, sb, "group/proj")
+	peer.saveConfig(t, []string{"group/proj"})
+	installLoopbackSSH(t, sb, peer)
+
+	// Both machines check out a feature branch, leaving main behind.
+	sb.Git(repo, "checkout", "-q", "-b", "feature")
+	sb.Git(peerRepo, "checkout", "-q", "-b", "feature")
+
+	// The commit lands on main, not the checked-out feature branch: hop onto
+	// main, commit, then hop back so "feature" is what's checked out when
+	// Push runs, exactly like Task 3's default-branch-anchoring covers.
+	sb.Git(repo, "checkout", "-q", "main")
+	testutil.Commit(t, sb, repo, "sync me via main")
+	sb.Git(repo, "checkout", "-q", "feature")
+
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Fatalf("Push = %d, want 0", code)
+	}
+
+	// The peer's local main ref must have advanced even though main was never
+	// checked out there.
+	if out := sb.Git(peerRepo, "log", "--oneline", "-1", "main"); !strings.Contains(out, "sync me via main") {
+		t.Errorf("peer's local main did not fast-forward:\n%s", out)
+	}
+	// Neither machine's checkout moved off the feature branch.
+	if out := sb.Git(repo, "symbolic-ref", "--short", "HEAD"); strings.TrimSpace(out) != "feature" {
+		t.Errorf("pusher's checked-out branch changed: %q", out)
+	}
+	if out := sb.Git(peerRepo, "symbolic-ref", "--short", "HEAD"); strings.TrimSpace(out) != "feature" {
+		t.Errorf("peer's checked-out branch changed: %q", out)
+	}
+	// FastForwardRef never touches the worktree: the peer's checked-out
+	// feature branch's README must be untouched by main's new commit.
+	readme, err := os.ReadFile(filepath.Join(peerRepo, "README.md"))
+	if err != nil {
+		t.Fatalf("read peer README.md: %v", err)
+	}
+	if strings.Contains(string(readme), "sync me via main") {
+		t.Errorf("peer's working tree was touched by a ref-only fast-forward:\n%s", readme)
+	}
+
+	testutil.AssertEvent(t, activity.OpPush, activity.StatusOK, "main")
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOK, "")
+	peerEvents := peer.events(t)
+	assertHasEvent(t, peerEvents, activity.OpReceive, activity.StatusOK, "fast-forwarded main")
+	assertNoErrorEvents(t, "peer", peerEvents)
+}
+
 func TestEndToEndReposOnDifferentRemotesDoNotConverge(t *testing.T) {
 	bin := buildBinary(t)
 	sb := testutil.NewSandbox(t)

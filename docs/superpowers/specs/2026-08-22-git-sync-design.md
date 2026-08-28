@@ -72,12 +72,27 @@ and a single command removes it.
   one-sided or differently-remoted repo is selected happily and then never
   syncs, with nothing to show for it. The user can quit at that point — with
   `q`, as in the picker — and nothing has been written on either machine.
+- **Every sync targets the remote's default branch, resolved per repo** —
+  `main`, `master`, `trunk`, whatever `git remote set-head` resolves the
+  remote's `HEAD` to — not whatever branch happens to be checked out. Push,
+  receive and install's initial sync all anchor to it, independent of a
+  feature branch or detached HEAD on either machine. A commit on any other
+  branch simply leaves the default branch unmoved, which is what makes
+  "non-default branches never sync" true without a separate guard: there is
+  nothing new to push or receive. A repo with no local default branch (only
+  feature branches, nothing named `main`/`master`/`trunk` locally) is
+  skipped and reported; a branch is never auto-created or checked out to
+  make one exist.
 - Receiving an update must never lose local uncommitted work. If the local
-  working tree is dirty, stash it before pulling and reapply the stash
-  afterward regardless of whether the pull succeeded or the history had
-  diverged — a dirty tree must never end up silently hidden in the stash.
-  If history can't fast-forward (diverged, independent of tree dirtiness),
-  just fetch and leave merging to the user.
+  working tree is dirty *and the default branch is what's checked out*,
+  stash it before pulling and reapply the stash afterward regardless of
+  whether the pull succeeded or the history had diverged — a dirty tree must
+  never end up silently hidden in the stash. When the default branch is not
+  the checked-out branch, there is no working tree to disturb: the local ref
+  is simply advanced directly. If history can't fast-forward (diverged,
+  independent of tree dirtiness), `receive` just fetches and leaves merging
+  to the user — steady-state `receive` never auto-merges, in either case.
+  The one exception to "never auto-merge" is install-time only (below).
 - A repo that exists on only one machine must be a silent, harmless no-op —
   not an error, and not something that pollutes the record with failures.
 - Everything the tool does must be inspectable after the fact. None of this
@@ -108,12 +123,15 @@ Three are invoked by machines, never typed by a human:
 
 - `git-sync hook post-commit` — what git runs after every commit. Identifies
   the repo and hands off; does nothing else.
-- `git-sync push <repo>` — runs detached in the background: pushes the current
-  branch to the repo's resolved remote, then (on push success) SSHes the peer
-  to invoke its `receive`.
+- `git-sync push <repo>` — runs detached in the background: pushes the
+  remote's default branch (not the currently checked-out branch) to the
+  repo's resolved remote, then (on push success) SSHes the peer to invoke
+  its `receive`.
 - `git-sync receive <repo>` — invoked only remotely, over SSH, by the peer's
-  `push`. Fetches the same remote and fast-forwards the local copy onto it,
-  handling a dirty working tree by stashing around the merge.
+  `push`. Fetches the same remote and fast-forwards the local copy of the
+  default branch onto it — stashing around the merge if it's the
+  checked-out branch and dirty, or advancing the ref directly with no stash
+  if it isn't checked out at all.
 
 Because `receive` never commits and never pushes, it cannot re-trigger the
 peer's hook — there is no feedback loop between the two machines.
@@ -400,15 +418,22 @@ swallowed.
 
 ### `push <repo>` (runs detached, in the background)
 
-1. Determine the checked-out branch. A detached HEAD is a skip: there is no
-   branch to name on the remote.
-2. Resolve the repo's remote by the `remote_names` rule. If there is none,
+1. Resolve the repo's remote by the `remote_names` rule. If there is none,
    record a warning — the repo is selected, so the user believes it is
    syncing and it is not — and stop without notifying the peer.
+2. Resolve `<branch>` as **the remote's default branch**
+   (`gitcmd.DefaultBranch`), not the currently checked-out branch — a feature
+   branch or a detached HEAD no longer matters here. If there is no local
+   branch of that name, record a skip: no local default branch means nothing
+   to push, and one is never auto-created.
 3. `git push <remote> <branch>`, naming both explicitly rather than relying on
-   the branch's upstream, which may point at a different remote. On failure
-   (offline, rejected), record an error and stop. No retry queue: if we are
-   offline or the push is rejected, the next commit pushes both commits anyway.
+   the branch's upstream, which may point at a different remote. A commit
+   that only touched a non-default branch simply leaves `<branch>` unmoved,
+   so this is a harmless no-op push ("Everything up-to-date") — this is the
+   entire mechanism behind "non-default branches never sync," with no
+   separate guard needed. On failure (offline, rejected), record an error and
+   stop. No retry queue: if we are offline or the push is rejected, the next
+   commit pushes both commits anyway.
 4. On push success: `ssh -o ConnectTimeout=5 -o BatchMode=yes
    $peer_user@$peer_host 'git-sync receive <repo>'` — built the same way every
    other SSH call is, so `BatchMode` gives way to the askpass helper when a
@@ -450,33 +475,47 @@ swallowed.
    older than 5 minutes when a new run tries to acquire it, treat it as stale
    (left behind by a killed process, e.g. an SSH drop or `kill -9`) and remove
    it before retrying, rather than waiting out the full 30s and giving up.
-4. Determine the currently checked-out branch. If HEAD is detached (no
-   branch), record a skip and exit — there is no branch to sync.
-5. Resolve the repo's remote by the same `remote_names` rule the pusher used.
+4. Resolve the repo's remote by the same `remote_names` rule the pusher used.
    If there is none, record a warning and exit: there is nothing to sync
    through. Resolving by name rather than following this branch's
    `@{upstream}` is what keeps the two machines meeting at the same place —
    an upstream pointing at a different remote would have us fetching a
    repository the peer never wrote to and reporting "up to date" forever.
+5. Resolve `<branch>` as **the remote's default branch**, the same way `push`
+   does — never the locally checked-out branch, and never affected by a
+   detached HEAD. If there is no local branch of that name, record a skip:
+   nothing to receive onto, and one is never auto-created.
 6. `git fetch <remote>`.
 7. Verify `<remote>/<branch>` exists. This is checked separately, before the
    merge, because a missing remote-tracking ref would otherwise fail the merge
-   and be misreported as diverged history. It is normal when the two machines
-   have different branches checked out.
-8. Check whether the working tree is dirty with `git status --porcelain` (not
-   by inspecting `git pull`'s exit code, which can't distinguish a dirty tree
-   from diverged history). If dirty, `git stash push -u`.
-9. Attempt `git merge --ff-only <remote>/<branch>`.
-   - **Success:** record the fast-forward, naming the remote.
-   - **Failure (history diverged, not fast-forwardable):** the fetch in step 6
-     already updated remote-tracking refs, so the user has everything they
-     need locally to merge by hand. Record "diverged, fetched only, manual
-     merge needed".
-10. If step 8 stashed, `git stash pop` — unconditionally, whether or not the
-   merge succeeded, so a dirty tree is never left hidden in the stash
-   regardless of why the merge failed. If the pop itself conflicts, leave the
-   conflict and the stash entry in place and record it loudly; never
-   auto-resolve content conflicts.
+   and be misreported as diverged history. It is normal when the default
+   branch was renamed or removed on the remote since the last clone.
+8. Measure ahead/behind between `<branch>` and `<remote>/<branch>`. If
+   already level, record up to date and stop.
+   - **Diverged (ahead and behind both > 0):** the fetch in step 6 already
+     updated remote-tracking refs, so the user has everything they need
+     locally to merge by hand. Record "diverged, fetched only, manual merge
+     needed" and stop. `receive` is fast-forward-only, always, in steady
+     state — it never attempts a merge itself, whether or not `<branch>` is
+     checked out. Auto-merging here would let both machines mint rival merge
+     commits and re-diverge forever, and `receive` never pushes, so it could
+     not fix that itself. (Contrast with `install`'s initial sync, which
+     *may* auto-merge a clean divergence once — see below.)
+   - **Purely behind:** fast-forward, branching on whether `<branch>` is the
+     checked-out branch here:
+     - **Checked out:** check whether the working tree is dirty with
+       `git status --porcelain` (not by inspecting a pull's exit code, which
+       can't distinguish a dirty tree from diverged history). If dirty,
+       `git stash push -u`, then `git merge --ff-only <remote>/<branch>`
+       (guaranteed to succeed — divergence was already ruled out above), then
+       `git stash pop` **unconditionally**, whether or not the merge
+       succeeded, so a dirty tree is never left hidden in the stash. If the
+       pop itself conflicts, leave the conflict and the stash entry in place
+       and record it loudly; never auto-resolve content conflicts.
+     - **Not checked out:** advance the local ref directly
+       (`git update-ref refs/heads/<branch> <remote>/<branch>`) without
+       touching the working tree at all — there is no checkout to disturb,
+       so there is nothing to stash.
 
 ### `report [flags]`
 
@@ -546,12 +585,32 @@ that never happened.
   own hooks alongside git-sync, the shim must manually invoke them — not
   handled in v1; if this matters for a specific repo, add that chaining by
   hand.
-- **Syncs whatever branch is checked out on the receiver**, against that
-  branch on the shared remote — not necessarily the branch that was just
-  pushed on the pusher. If the two machines have different branches checked
-  out, the receiver finds nothing to fast-forward and no-ops; this is treated
-  as normal (not an error), since the receiver's own branch has nothing new
-  coming from a different branch.
+- **Only the remote's default branch ever syncs.** Push, receive and
+  install's initial sync all anchor to it (`gitcmd.DefaultBranch`, resolved
+  per repo — `main`, `master`, `trunk`, whatever the remote's `HEAD` says),
+  regardless of what either machine has checked out — a feature branch or a
+  detached HEAD is fine on either side, and syncing continues underneath it.
+  Commits on any other branch simply don't sync: there is nothing to push or
+  receive on that branch, by design (not an error). A repo with no local
+  default branch (only feature branches, nothing named `main`/`master`/
+  `trunk` locally) is skipped and reported rather than having one
+  auto-created.
+- **Auto-merge is install-time-only, and only for a clean merge.**
+  Steady-state `receive` is fast-forward-only and never auto-merges a
+  divergence — it always reports it and leaves it for the user, because two
+  machines each auto-merging independently would mint rival merge commits
+  and re-diverge forever, and `receive` never pushes so it could not recover
+  from that on its own. The one softened case is `install`'s initial sync:
+  if the two machines' default branches have genuinely diverged, the
+  diverged side may attempt a single real merge of `<remote>/<branch>` — but
+  only once, only on the diverged side, and only when the default branch is
+  what's checked out there (a diverged branch that isn't checked out has no
+  worktree to merge into, so it's reported blocked instead, same as always).
+  A clean merge is pushed immediately and the other machine then
+  fast-forwards onto it; a merge that conflicts is `git merge --abort`ed and
+  the repo is reported diverged for the user to merge by hand, exactly as
+  any unresolved divergence always has been. Conflicting merges are never
+  auto-resolved, at install time or otherwise.
 - **Everything depends on the remote being reachable and writable from both
   machines.** git-sync moves no repository data itself: if the remote is down,
   or one machine lacks push access, nothing syncs, and the record shows a
