@@ -164,17 +164,36 @@ done
 	return b.String()
 }
 
-// RenderRepoChecks prints the mismatches and returns how many there were.
-// It always prints something: silence would read as "it did not look".
+// RenderRepoChecks prints the mismatches and returns how many of them the user
+// has to fix by hand. It always prints something: silence would read as "it did
+// not look".
+//
+// A repo that is simply missing on the peer, and whose remote URL we know, is
+// not counted: install clones it (see clonepeer.go). It is still named, because
+// cloning on the other machine is a thing the user should be told about, but it
+// is not a reason to stop and ask whether to continue.
 func RenderRepoChecks(w io.Writer, peerHost, peerBase string, checks []RepoCheck) int {
-	var bad []RepoCheck
+	var bad, clonable []RepoCheck
 	for _, c := range checks {
-		if c.State != RepoPresent {
+		switch {
+		case c.State == RepoPresent:
+		case c.Clonable():
+			clonable = append(clonable, c)
+		default:
 			bad = append(bad, c)
 		}
 	}
+	if len(clonable) > 0 {
+		fmt.Fprintf(w, "%d of %d selected repos are not on %s yet; install will clone them "+
+			"there from their remote:\n", len(clonable), len(checks), peerHost)
+		for _, c := range clonable {
+			fmt.Fprintf(w, "  %-24s %s\n", c.Rel, c.RemoteURL)
+		}
+	}
 	if len(bad) == 0 {
-		fmt.Fprintf(w, "all %d selected repos are present on %s\n", len(checks), peerHost)
+		if len(clonable) == 0 {
+			fmt.Fprintf(w, "all %d selected repos are present on %s\n", len(checks), peerHost)
+		}
 		return 0
 	}
 

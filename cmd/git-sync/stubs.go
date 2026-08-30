@@ -36,6 +36,8 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	noPeer := fs.Bool("no-peer", false, "do not provision the peer machine")
 	noInitialSync := fs.Bool("no-initial-sync", false,
 		"do not push/fast-forward the selected repos level with their remotes")
+	noCloneMissing := fs.Bool("no-clone-missing", false,
+		"do not clone selected repos the peer does not have yet")
 	selfHost := fs.String("self-host", "", "this machine's hostname, as the peer sees it")
 	selfUser := fs.String("self-user", "", "the account the peer should ssh back into")
 	peerBaseDir := fs.String("peer-base-dir", "", "the peer's sync root (default: same path relative to $HOME)")
@@ -109,10 +111,13 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	var checks []setup.RepoCheck
 	if !*noPeer {
 		fmt.Fprintf(stdout, "checking those repos on %s\n", host)
 		remotes := cfgRemotes()
-		if !checkPeer(config.Config{BaseDir: base, PeerHost: host, PeerUser: user, RemoteNames: remotes}, *peerBaseDir, repoWants(config.Config{BaseDir: base, RemoteNames: remotes}, repos), stdout, stderr) {
+		var ok bool
+		checks, ok = checkPeer(config.Config{BaseDir: base, PeerHost: host, PeerUser: user, RemoteNames: remotes}, *peerBaseDir, repoWants(config.Config{BaseDir: base, RemoteNames: remotes}, repos), stdout, stderr)
+		if !ok {
 			fmt.Fprintln(stdout, "cancelled; nothing was installed and the peer was not touched")
 			return 0
 		}
@@ -126,6 +131,15 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	}); err != nil {
 		fmt.Fprintln(stderr, "install failed:", err)
 		return 1
+	}
+
+	// Stage "clone": give the peer the repos it does not have yet. Before the
+	// levelling stage, so a freshly cloned repo is measured like any other and
+	// needs nothing further; and after the peer has been provisioned, so the
+	// hook that will sync it is already in place there.
+	if !*noPeer && !*noCloneMissing {
+		cloneMissingRepos(config.Config{BaseDir: base, PeerHost: host, PeerUser: user, RemoteNames: cfgRemotes()},
+			*peerBaseDir, checks, stdout, stderr)
 	}
 
 	// Stage "level": bring both machines up to the shared remote now that the
@@ -243,34 +257,70 @@ func repoWants(cfg config.Config, repos []string) []setup.RepoWant {
 }
 
 // checkPeer asks the peer which selected repos it has, prints the mismatches
-// and returns whether to go ahead. The user can quit here with q, just as in
-// the picker: nothing has been written yet, on either machine.
-func checkPeer(cfg config.Config, peerBaseDir string, repos []setup.RepoWant, stdout, stderr io.Writer) bool {
+// and returns them along with whether to go ahead. The user can quit here with
+// q, just as in the picker: nothing has been written yet, on either machine.
+//
+// The checks come back so the install can act on them afterwards: the ones that
+// are simply missing on the peer are cloned there once the hook is armed.
+func checkPeer(cfg config.Config, peerBaseDir string, repos []setup.RepoWant, stdout, stderr io.Writer) ([]setup.RepoCheck, bool) {
 	probe, err := setup.Probe(setup.Target(cfg))
 	if err != nil {
 		// Install already survives an unreachable peer; do not turn a warning
 		// into a dead end here.
 		fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", cfg.PeerHost, err)
-		return true
+		return nil, true
 	}
 
 	checks, err := setup.CheckPeerReposWithRemotes(setup.Target(cfg),
 		setup.PeerBase(cfg.BaseDir, probe.Home, peerBaseDir), repos, cfg.Remotes())
 	if err != nil {
 		fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", cfg.PeerHost, err)
-		return true
+		return nil, true
 	}
 	n := setup.RenderRepoChecks(stdout, cfg.PeerHost,
 		setup.PeerBase(cfg.BaseDir, probe.Home, peerBaseDir), checks)
 	if n == 0 {
-		return true
+		return checks, true
 	}
 	// Nothing to decide without a terminal: report and carry on, since the
 	// mismatch is informational and the rest of the install is still correct.
 	if !isTTY(stdout) {
-		return true
+		return checks, true
 	}
-	return confirm(stdout, os.Stdin, "continue anyway? [enter] continue, [q] quit: ")
+	return checks, confirm(stdout, os.Stdin, "continue anyway? [enter] continue, [q] quit: ")
+}
+
+// cloneMissingRepos is the "clone" stage: push each repo the peer does not have
+// to its shared remote, then clone it there, so a repo the user selected on
+// this machine only starts syncing today instead of never.
+//
+// Never fatal, for the same reason levelRepos is not: the install has already
+// succeeded, and a repo that cannot be cloned is a thing the user fixes in that
+// repo, not a reason to leave the machine unconfigured.
+func cloneMissingRepos(cfg config.Config, peerBaseDir string, checks []setup.RepoCheck, stdout, stderr io.Writer) {
+	todo := setup.ClonableChecks(checks)
+	if len(todo) == 0 {
+		return
+	}
+	probe, err := setup.Probe(setup.Target(cfg))
+	if err != nil {
+		fmt.Fprintf(stderr, "could not reach %s (%v); skipping the clones\n", cfg.PeerHost, err)
+		return
+	}
+	peerBase := setup.PeerBase(cfg.BaseDir, probe.Home, peerBaseDir)
+
+	if !setup.RenderClonePlan(stdout, cfg.PeerHost, peerBase, todo) {
+		return
+	}
+	// This writes new directories on the other machine, so on a terminal it
+	// asks first - the same courtesy the initial sync extends before it pushes.
+	if isTTY(stdout) && !confirm(stdout, os.Stdin,
+		"clone them there now? [enter] yes, [q] skip: ") {
+		fmt.Fprintln(stdout, "skipped; run install again to clone them later")
+		return
+	}
+	setup.RenderCloneResult(stdout, cfg.PeerHost,
+		setup.CloneMissing(setup.Target(cfg), peerBase, cfg, todo))
 }
 
 // confirm returns false only for an explicit quit. q, Q and EOF quit; anything

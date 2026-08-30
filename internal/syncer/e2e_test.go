@@ -447,6 +447,65 @@ func TestEndToEndInstalledHookFiresOnRealCommit(t *testing.T) {
 	}
 }
 
+func TestEndToEndInstallClonesARepoThePeerDoesNotHave(t *testing.T) {
+	// The peer has no copy of the repo, which used to mean it never synced and
+	// the user got a paragraph telling them to go clone it by hand. Install
+	// pushes it to the shared remote and clones it there instead, and the very
+	// next commit syncs into that clone like any other repo.
+	bin := buildBinary(t)
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.Commit(t, sb, repo, "committed before either machine was set up")
+
+	peer := newPeerMachine(t, bin)
+	installLoopbackSSH(t, sb, peer)
+
+	install := exec.Command(bin, "install", "--peer-host", "peerhost", "--peer-user", "peeruser", "--all", sb.BaseDir)
+	install.Env = os.Environ()
+	out, err := install.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git-sync install failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "group/proj") || !strings.Contains(string(out), "clone") {
+		t.Errorf("install should say which repos it is cloning on the peer:\n%s", out)
+	}
+
+	peerRepo := filepath.Join(peer.BaseDir, "group/proj")
+	if _, statErr := os.Stat(filepath.Join(peerRepo, ".git")); statErr != nil {
+		t.Fatalf("the peer has no clone at the same relative path: %v\ninstall said:\n%s", statErr, out)
+	}
+	// Pushed before cloning, so the clone is not born a commit behind.
+	if log := sb.Git(peerRepo, "log", "--oneline"); !strings.Contains(log, "committed before either machine") {
+		t.Errorf("the peer's clone is missing a commit this machine had:\n%s", log)
+	}
+
+	commit := exec.Command("git", "commit", "--allow-empty", "-qm", "first commit after install")
+	commit.Dir = repo
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("git commit in %s: %v\n%s", repo, err, out)
+	}
+	waitForEvent(t, activity.OpPush, activity.StatusOK, "", 10*time.Second)
+	waitForPeerLog(t, sb, peerRepo, "first commit after install", 10*time.Second)
+}
+
+// waitForPeerLog polls the peer's working tree until msg shows up in its log.
+// The hook is asynchronous, so the peer's receive may not have run yet the
+// instant this machine's push event was written.
+func waitForPeerLog(t *testing.T, sb *testutil.Sandbox, peerRepo, msg string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		log := sb.Git(peerRepo, "log", "--oneline")
+		if strings.Contains(log, msg) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %q to reach the peer's clone:\n%s", msg, log)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // mustReadActivity reads this process's own activity log (machine A's).
 func mustReadActivity(t *testing.T) []activity.Event {
 	t.Helper()

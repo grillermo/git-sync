@@ -144,6 +144,12 @@ Package layering, leaves to composition:
   binary/config/hook to the peer over ssh, idempotently), `repocheck.go` (asks
   the peer which selected repos it actually has, and whether they point at
   the same remote — a mismatched pair silently never converges otherwise),
+  `clonepeer.go` (pushes each selected repo the peer does not have to its
+  shared remote, then clones it there at the same relative path, from the
+  same URL and under the same remote name — push first, or the clone is born
+  a commit behind; only a genuinely empty path is ever written to, so
+  `not-a-repo`/`other-remote`/`unchecked` are still reported for the user;
+  `--no-clone-missing` skips it),
   `sshauth.go` (detects a password-only peer, prompts once, verifies against
   the peer, stores in the keychain before anything else happens),
   `initialsync.go` (the last install stage: measures both machines' **default
@@ -196,7 +202,10 @@ for the same non-racing reason), `askpass`, `config.toml`, `activity.jsonl`,
 - A one-sided repo (exists on only one machine) or a repo cloned from a
   *different* remote than the peer's copy must never look like success: it's
   a `skip`/`warn` event, never silently dropped and never retried
-  automatically.
+  automatically. **Auto-cloning is install-time-only**, same as auto-merge:
+  `install` will clone a one-sided repo onto the peer, but the steady-state
+  push/receive path never creates a repo — a missing repo there stays a
+  `skip` forever.
 - Nothing in the sync path may ever block on a terminal prompt — the hook
   and its children run detached with no tty. This is the entire reason the
   password/keychain machinery in `setup`/`secret`/`sshx` exists.

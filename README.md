@@ -30,7 +30,7 @@ go build -o git-sync ./cmd/git-sync
 ./git-sync install ~/code --peer-host other-machine.local --peer-user you
 ```
 
-The wizard runs in four stages: **connect, pick, verify, install**.
+The wizard runs in five stages: **connect, pick, verify, install, clone**.
 
 - **Connect** comes first. If the peer wants a password rather than a key, it
   is asked for here, once, checked against the peer and saved to your
@@ -43,6 +43,12 @@ The wizard runs in four stages: **connect, pick, verify, install**.
   differently-remoted repo would otherwise never sync and never say why.
 - **Install** writes the local hook and config, then sets up the peer over
   SSH - binary, config, hook and all - so nothing is typed on it.
+- **Clone** gives the peer the repos it did not have. Each one is pushed to
+  its shared remote from here first, then cloned there at the same relative
+  path under the peer's `base_dir`, from that same remote and under the same
+  remote name. Only a genuinely empty path is ever cloned: a directory that
+  is not a repo, or a clone of a different remote, is still yours to sort
+  out. `--no-clone-missing` skips the stage.
 
 Press `q` at either the picker or the verify screen to quit with nothing
 changed on either machine.
@@ -57,6 +63,7 @@ Flags:
 | `--self-host` | this machine's hostname, if the peer cannot reach it by its system hostname |
 | `--self-user` | the account the peer should SSH back into |
 | `--peer-base-dir` | the peer's sync root, if the two machines lay their repos out differently |
+| `--no-clone-missing` | do not clone selected repos the peer does not have yet |
 
 ## Prerequisites
 
@@ -92,12 +99,18 @@ Flags:
 
 ## Repos that exist on only one machine
 
-Install warns about these up front (`missing`/`not-a-repo`, listed per repo).
-At runtime nothing happens, by design: the commit pushes normally, the peer
-records `not on this machine`, the pusher records `no copy of this repo`. No
-error, no retry, no auto-clone. To start syncing one, clone it by hand on the
-other machine under its `base_dir` at the same relative path; the next commit
-picks it up.
+Install names these up front and, for the ones that are simply not there on
+the peer, clones them during the clone stage. What it will not clone is a
+path it does not understand - a directory that is not a repo, a clone of a
+different remote, or a repo it could not ask about (`not-a-repo`,
+`other-remote`, `no-remote`, `unchecked`); those are listed for you.
+
+At runtime - after install, or under `--no-clone-missing` - nothing happens,
+by design: the commit pushes normally, the peer records `not on this
+machine`, the pusher records `no copy of this repo`. No error, no retry, no
+auto-clone. To start syncing one, clone it by hand on the other machine under
+its `base_dir` at the same relative path (or re-run `install`); the next
+commit picks it up.
 
 ## Troubleshooting
 

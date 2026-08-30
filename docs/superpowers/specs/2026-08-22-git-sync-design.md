@@ -72,6 +72,15 @@ and a single command removes it.
   one-sided or differently-remoted repo is selected happily and then never
   syncs, with nothing to show for it. The user can quit at that point — with
   `q`, as in the picker — and nothing has been written on either machine.
+- A repo that is simply *missing* on the peer is the one mismatch `install`
+  can fix by itself, and it does: after provisioning, it pushes that repo to
+  its shared remote from this machine and clones it on the peer at the same
+  relative path, from the same URL, under the same remote name. Push before
+  clone, or the new clone starts a commit behind. Only an empty path is ever
+  written to — a directory that is not a repo, a clone of a *different*
+  remote, or a repo the peer could not be asked about is reported, never
+  overwritten. Like auto-merge, this is install-time only: the steady-state
+  push/receive path never creates a repo.
 - **Every sync targets the remote's default branch, resolved per repo** —
   `main`, `master`, `trunk`, whatever `git remote set-head` resolves the
   remote's `HEAD` to — not whatever branch happens to be checked out. Push,
@@ -98,8 +107,9 @@ and a single command removes it.
 - Everything the tool does must be inspectable after the fact. None of this
   work can prompt the user or print to a terminal they are watching, so the
   activity record is the only account of what happened.
-- Out of scope (YAGNI): retry/queueing for offline pushes, auto-cloning new
-  repos onto the peer, auto-resolving real merge/stash conflicts, generating
+- Out of scope (YAGNI): retry/queueing for offline pushes, auto-cloning repos
+  onto the peer *at sync time* (install does it, the hook never does),
+  auto-resolving real merge/stash conflicts, generating
   or installing SSH keys on the user's behalf, interactive keyboard-interactive
   or 2FA SSH flows, syncing more than two machines, non-macOS/Linux support.
 
@@ -198,9 +208,10 @@ exec "/Users/guillermo/.gitsync/bin/git-sync" hook post-commit
 Idempotent; re-run any time to amend the repo selection or update the
 installed binary.
 
-It runs as a four-stage wizard, and the order matters: **connect → pick →
-verify → install**. Nothing outside this machine is written before the last
-stage, and quitting at any question leaves the peer untouched.
+It runs as a five-stage wizard, and the order matters: **connect → pick →
+verify → install → clone**. Nothing outside this machine is written before
+the install stage, and quitting at any question before it leaves the peer
+untouched.
 
 1. **Connect.** Establish that SSH to the peer works unattended, asking for
    and saving a password if that is what the peer requires (below). First,
@@ -211,6 +222,10 @@ stage, and quitting at any question leaves the peer untouched.
 3. **Verify.** Ask the peer whether the chosen repos line up, and report
    mismatches.
 4. **Install.** Write this machine, then provision the peer.
+5. **Clone.** Give the peer the selected repos it does not have, pushing each
+   to its shared remote first. Last, because it writes repos on the other
+   machine, and because the hook that will keep them in sync is by then
+   already in place there. `--no-clone-missing` skips it.
 
 In detail, it:
 
