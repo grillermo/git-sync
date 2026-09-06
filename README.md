@@ -83,9 +83,39 @@ Flags:
 - Push access to that remote from both machines.
 - `base_dir` need not be the same absolute path on both machines.
 
-## The three commands
+## Resync
+
+`git-sync resync` re-runs everything install does after the picker, against
+the repos already in your config: **connect, verify, install, clone, level**.
+Nothing is picked, no peer is asked for - it reads `~/.gitsync/config.toml`
+and repairs what drifted since.
+
+Reach for it when a repo was cloned by hand on one machine, when the peer was
+down at install time, or when `git-sync report --errors` shows a repo warning
+about divergence every time. Those are the stages that go stale, and re-running
+`install` to fix them means walking the picker again.
+
+```bash
+git-sync resync                 # check and repair everything being synced
+git-sync resync --repos proj    # just this one
+```
+
+| Flag | Effect |
+|---|---|
+| `--repos a,b,c` | only check these; must already be synced (this never changes the allowlist) |
+| `--no-provision` | do not re-write the local hook or re-provision the peer; only check, clone and level |
+| `--no-clone-missing` | do not clone repos the peer does not have yet |
+| `--no-initial-sync` | do not push/fast-forward the repos level with their remotes |
+| `--peer-base-dir` | the peer's sync root, if the two machines lay their repos out differently |
+
+Same courtesies as install: it asks before pushing commits or writing
+directories on the other machine, `q` at the verify screen quits with nothing
+changed, and an unreachable peer is a warning rather than a failure.
+
+## The four commands
 
 - `git-sync install <base_dir>` - see above.
+- `git-sync resync [flags]` - see above.
 - `git-sync report [flags]` - browse sync activity, grouped by repo.
   - `--since 24h` - only show activity newer than this
   - `--repo <substr>` - only show repos whose path contains this
@@ -109,8 +139,8 @@ At runtime - after install, or under `--no-clone-missing` - nothing happens,
 by design: the commit pushes normally, the peer records `not on this
 machine`, the pusher records `no copy of this repo`. No error, no retry, no
 auto-clone. To start syncing one, clone it by hand on the other machine under
-its `base_dir` at the same relative path (or re-run `install`); the next
-commit picks it up.
+its `base_dir` at the same relative path (or run `git-sync resync`, which
+clones it there for you); the next commit picks it up.
 
 ## Troubleshooting
 

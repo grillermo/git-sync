@@ -86,12 +86,22 @@ answers all of them with no per-command special-casing.
 
 ## Architecture
 
-Six subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
+Seven subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
 actual command bodies live in `cmd/git-sync/stubs.go` — despite the
 filename, that file is not stub code, it's the real implementation of every
-`cmdX` function). Three are for humans (`install`, `uninstall`, `report`);
+`cmdX` function, except `cmdResync` which lives in `cmd/git-sync/resync.go`).
+Four are for humans (`install`, `resync`, `uninstall`, `report`);
 three are invoked by machines and deliberately hidden from `-h` output
 (`hook`, `push`, `receive`), plus `askpass`/`savepass` invoked by ssh itself.
+
+`resync` is install minus the picker: it loads the saved config and re-runs
+the same stages against the repos already in the allowlist — `EnsureAuth`,
+`checkPeer`, `setup.Install` (which re-lays the local shims and re-provisions
+the peer), `cloneMissingRepos`, `levelRepos` — reusing cmdInstall's own
+helpers, since every one of those stages is idempotent by design. `--repos`
+filters *which repos are examined* and never what `setup.Install` writes back
+to `config.toml`; adding a repo to the allowlist still means running
+`install` and its picker.
 
 Package layering, leaves to composition:
 

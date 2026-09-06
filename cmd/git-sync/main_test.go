@@ -22,7 +22,7 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2", code)
 	}
-	for _, want := range []string{"install", "uninstall", "report"} {
+	for _, want := range []string{"install", "resync", "uninstall", "report"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("usage does not mention %q:\n%s", want, out.String())
 		}

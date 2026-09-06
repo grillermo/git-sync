@@ -11,6 +11,7 @@ const usage = `git-sync keeps git repos in sync between two machines.
 
 Usage:
   git-sync install <base_dir>   pick repos under base_dir and set up both machines
+  git-sync resync [flags]       re-check the synced repos and repair what drifted
   git-sync uninstall [--purge]  stop syncing (--purge also deletes config and history)
   git-sync report [flags]       browse sync activity, grouped by repo
 
@@ -32,6 +33,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "install":
 		return cmdInstall(args[1:], stdout, stderr)
+	case "resync":
+		return cmdResync(args[1:], stdout, stderr)
 	case "uninstall":
 		return cmdUninstall(args[1:], stdout, stderr)
 	case "report":
