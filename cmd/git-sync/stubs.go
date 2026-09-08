@@ -15,6 +15,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 
+	"github.com/grillermo/chicle"
+
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/gitcmd"
@@ -223,15 +225,24 @@ func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) (
 			"no terminal for the repo picker: pass --all or --repos a,b,c")
 	}
 
-	final, runErr := tea.NewProgram(picker.New(discovered, current)).Run()
-	if runErr != nil {
-		return nil, runErr
+	cfg := picker.Config(discovered, current)
+	cfg.Actions = []chicle.Action{
+		{Label: "Save", Run: func(s chicle.Selection) chicle.Outcome {
+			return chicle.Outcome{Result: strings.Join(picker.Selected(s), ","), Done: true}
+		}},
+		{Label: "Cancel"},
 	}
-	m, ok := final.(picker.Model)
-	if !ok || m.Cancelled() {
+	result, err := chicle.Run(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if result == "" {
+		// Either Cancel, or Save with nothing ticked - the old picker.go
+		// conflated these too (an empty Selected() slice is also nil, and
+		// cmdInstall treats a nil result from chooseRepos as "cancelled").
 		return nil, nil
 	}
-	return m.Selected(), nil
+	return strings.Split(result, ","), nil
 }
 
 // isTTY reports whether w is an *os.File connected to a terminal.

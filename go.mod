@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/grillermo/chicle v0.0.0-00010101000000-000000000000
 	golang.org/x/term v0.45.0
 )
 
@@ -32,3 +33,5 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.3.8 // indirect
 )
+
+replace github.com/grillermo/chicle => ../chicle
