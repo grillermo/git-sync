@@ -32,6 +32,70 @@ func Run(dir string, args ...string) (string, error) {
 	return text, nil
 }
 
+// Summary reduces a git failure to the lines that say what went wrong.
+//
+// Run embeds git's whole combined output in the error. For most commands the
+// first line is the diagnosis, which is why callers used to keep only that -
+// but `git push` opens with the "To <url>" transport banner and closes with a
+// multi-line "hint:" advice block, so first-line-only reliably drops the one
+// line that matters (" ! [rejected] ... (fetch first)").
+//
+// Keeps git's own diagnostic prefixes, drops the banner and the advice, and
+// falls back to the first non-empty line when nothing matches, so unfamiliar
+// output is never reduced to nothing. Presentation only: nothing decides
+// behaviour by parsing this, so a future git rewording degrades a log message
+// and cannot produce a wrong answer.
+func Summary(err error) string {
+	if err == nil {
+		return ""
+	}
+	var keep []string
+	for _, ln := range strings.Split(err.Error(), "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" || strings.HasPrefix(ln, "hint:") {
+			continue
+		}
+		if d, ok := diagnostic(ln); ok {
+			keep = append(keep, d)
+		}
+	}
+	if len(keep) > 0 {
+		return strings.Join(keep, "; ")
+	}
+	for _, ln := range strings.Split(err.Error(), "\n") {
+		if ln = strings.TrimSpace(ln); ln != "" {
+			return ln
+		}
+	}
+	return ""
+}
+
+// diagnosticMarkers are the prefixes git puts on the lines that say what went
+// wrong. "To " is absent on purpose: it introduces the push transport banner,
+// which is noise, and is skipped by simply never matching.
+var diagnosticMarkers = []string{"! ", "error:", "fatal:", "remote:", "warning:"}
+
+// diagnostic returns the line from its first diagnostic marker onward.
+//
+// It searches *within* the line rather than testing its prefix, because Run
+// formats failures as "git <args>: <exit status>: <git's first output line>" -
+// so when git's diagnosis is on its own first line it ends up embedded
+// mid-line here, and a prefix test would miss it. Missing it is worse than
+// truncating: if any later line does match, the result looks fine while the
+// actual error is gone.
+func diagnostic(ln string) (string, bool) {
+	at := -1
+	for _, m := range diagnosticMarkers {
+		if i := strings.Index(ln, m); i >= 0 && (at < 0 || i < at) {
+			at = i
+		}
+	}
+	if at < 0 {
+		return "", false
+	}
+	return ln[at:], true
+}
+
 // Toplevel returns the root of the repo containing dir.
 func Toplevel(dir string) (string, error) {
 	return Run(dir, "rev-parse", "--show-toplevel")

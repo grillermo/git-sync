@@ -1,6 +1,7 @@
 package gitcmd_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -237,5 +238,76 @@ func TestRunMarksItsGitCommandsAsInternal(t *testing.T) {
 	testutil.AppendFileIn(t, repo, "README.md", "x\n")
 	if _, err := gitcmd.Run(repo, "commit", "-am", "internal"); err != nil {
 		t.Fatalf("gitcmd.Run must set GITSYNC_INTERNAL: %v", err)
+	}
+}
+
+func TestSummaryKeepsTheReasonAPushWasRejected(t *testing.T) {
+	// Exactly what `git push` writes when the remote has moved on. The first
+	// line is the transport banner, so taking it alone drops the diagnosis -
+	// which is the bug Summary exists to fix.
+	err := errors.New("git push github main: exit status 1: " +
+		"To github.com:grillermo/awh.git\n" +
+		" ! [rejected]        main -> main (fetch first)\n" +
+		"error: failed to push some refs to 'github.com:grillermo/awh.git'\n" +
+		"hint: Updates were rejected because the remote contains work that you do not\n" +
+		"hint: have locally. This is usually caused by another repository pushing to\n" +
+		"hint: the same ref.")
+
+	got := gitcmd.Summary(err)
+
+	if !strings.Contains(got, "[rejected]") {
+		t.Errorf("Summary dropped the rejection reason: %q", got)
+	}
+	if !strings.Contains(got, "fetch first") {
+		t.Errorf("Summary dropped the cause: %q", got)
+	}
+	if strings.Contains(got, "hint:") {
+		t.Errorf("Summary kept git's advice block: %q", got)
+	}
+	if strings.Contains(got, "To github.com") {
+		t.Errorf("Summary kept the transport banner: %q", got)
+	}
+}
+
+func TestSummaryKeepsFatalForAnOrdinaryFailure(t *testing.T) {
+	err := errors.New("git rev-parse HEAD: exit status 128: " +
+		"fatal: ambiguous argument 'HEAD': unknown revision")
+	if got := gitcmd.Summary(err); !strings.Contains(got, "fatal: ambiguous argument") {
+		t.Errorf("Summary lost the fatal line: %q", got)
+	}
+}
+
+func TestSummaryFallsBackToTheFirstLineWhenNothingMatches(t *testing.T) {
+	// Unfamiliar output must never be reduced to nothing: an empty message in
+	// the log is strictly worse than a possibly-irrelevant one.
+	err := errors.New("git something: exit status 1: weird unprefixed output\nsecond line")
+	got := gitcmd.Summary(err)
+	if got == "" {
+		t.Fatal("Summary returned empty for unrecognised output")
+	}
+	if strings.Contains(got, "second line") {
+		t.Errorf("fallback should be the first line only, got %q", got)
+	}
+}
+
+func TestSummaryOfNilIsEmpty(t *testing.T) {
+	if got := gitcmd.Summary(nil); got != "" {
+		t.Errorf("Summary(nil) = %q, want empty", got)
+	}
+}
+
+func TestSummaryKeepsALineOneDiagnosisEvenWhenALaterLineMatches(t *testing.T) {
+	// Run formats as "git <args>: <exit>: <git's first output line>", so when
+	// the diagnosis is on line 1 it is *embedded*, not at the start of the
+	// line. A prefix-only scan would skip it, find the later "warning:", and
+	// return a non-empty result with the real error silently dropped - worse
+	// than the truncation this replaces, because it looks like it worked.
+	err := errors.New("git merge github/main: exit status 1: fatal: refusing to merge unrelated histories\n" +
+		"warning: some other thing")
+
+	got := gitcmd.Summary(err)
+
+	if !strings.Contains(got, "refusing to merge unrelated histories") {
+		t.Errorf("Summary dropped the line-one diagnosis: %q", got)
 	}
 }
