@@ -58,7 +58,7 @@ func Push(rel string) int {
 	if err != nil {
 		_ = activity.Append(activity.Event{
 			Repo: rel, Op: activity.OpPush, Status: activity.StatusWarn,
-			Branch: branch, Msg: "no remote to sync through: " + firstLine(err.Error()),
+			Branch: branch, Msg: "no remote to sync through: " + gitcmd.Summary(err),
 		})
 		return 0
 	}
@@ -68,7 +68,7 @@ func Push(rel string) int {
 	if _, err := gitcmd.Push(dir, remote, branch); err != nil {
 		_ = activity.Append(activity.Event{
 			Repo: rel, Op: activity.OpPush, Status: activity.StatusError,
-			Branch: branch, Msg: "push to " + remote + " failed: " + firstLine(err.Error()),
+			Branch: branch, Msg: "push to " + remote + " failed: " + gitcmd.Summary(err),
 		})
 		return 0
 	}
@@ -155,11 +155,4 @@ func exitCode(err error) int {
 		return ee.ExitCode()
 	}
 	return -1
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
-	return s
 }

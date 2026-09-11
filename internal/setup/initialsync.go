@@ -352,7 +352,7 @@ func landHere(dir, remote, branch string) (note string) {
 		}()
 	}
 	if err := gitcmd.FastForward(dir, remote, branch); err != nil {
-		return "fast-forward failed: " + firstLine(err.Error())
+		return "fast-forward failed: " + gitcmd.Summary(err)
 	}
 	return ""
 }

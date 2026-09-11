@@ -120,12 +120,12 @@ func syncRepo(cfg config.Config, rel, dir string) int {
 	// repository the peer never wrote to and report "up to date" forever.
 	remote, err := gitcmd.ResolveRemote(dir, cfg.Remotes())
 	if err != nil {
-		log(activity.StatusWarn, branch, "no remote to sync through: "+firstLine(err.Error()))
+		log(activity.StatusWarn, branch, "no remote to sync through: "+gitcmd.Summary(err))
 		return 0
 	}
 
 	if err := gitcmd.Fetch(dir, remote); err != nil {
-		log(activity.StatusError, branch, "fetch from "+remote+" failed: "+firstLine(err.Error()))
+		log(activity.StatusError, branch, "fetch from "+remote+" failed: "+gitcmd.Summary(err))
 		return 0
 	}
 
@@ -141,7 +141,7 @@ func syncRepo(cfg config.Config, rel, dir string) int {
 	// pull's exit code, which cannot tell a dirty tree from diverged history.
 	dirty, err := gitcmd.IsDirty(dir)
 	if err != nil {
-		log(activity.StatusError, branch, "could not read status: "+firstLine(err.Error()))
+		log(activity.StatusError, branch, "could not read status: "+gitcmd.Summary(err))
 		return 0
 	}
 	stashed := false
