@@ -10,7 +10,6 @@ import (
 
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
-	"github.com/grillermo/git-sync/internal/secret"
 	"github.com/grillermo/git-sync/internal/setup"
 	"github.com/grillermo/git-sync/internal/testutil"
 )
@@ -201,7 +200,7 @@ func TestUninstallRemovesTheHookButKeepsHistory(t *testing.T) {
 		t.Error("the hook should be gone")
 	}
 	if _, err := os.Stat(config.AskpassPath()); !os.IsNotExist(err) {
-		t.Error("the askpass shim should be gone")
+		t.Error("config.AskpassPath should be gone")
 	}
 	out, _ := exec.Command("git", "config", "--global", "core.hooksPath").Output()
 	if strings.TrimSpace(string(out)) != "" {
@@ -243,48 +242,6 @@ func TestUninstallPurgeRemovesEverything(t *testing.T) {
 	}
 }
 
-func TestUninstallPurgeForgetsThePassword(t *testing.T) {
-	sb := testutil.NewSandbox(t)
-	sb.StubSSH(0)
-	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
-	_ = setup.Install(setup.Options{
-		BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester",
-		Self: self, NoPeer: true, Out: io.Discard,
-	})
-	if err := secret.Set("tester@peer.example", []byte("hunter2")); err != nil {
-		t.Fatalf("secret.Set: %v", err)
-	}
-
-	if err := setup.Uninstall(true, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	if secret.Has("tester@peer.example") {
-		t.Error("--purge should forget the stored password")
-	}
-}
-
-func TestUninstallWithoutPurgeKeepsThePassword(t *testing.T) {
-	// Same reasoning as keeping config and activity history: you may be
-	// about to re-install.
-	sb := testutil.NewSandbox(t)
-	sb.StubSSH(0)
-	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
-	_ = setup.Install(setup.Options{
-		BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester",
-		Self: self, NoPeer: true, Out: io.Discard,
-	})
-	if err := secret.Set("tester@peer.example", []byte("hunter2")); err != nil {
-		t.Fatalf("secret.Set: %v", err)
-	}
-
-	if err := setup.Uninstall(false, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	if !secret.Has("tester@peer.example") {
-		t.Error("a plain uninstall should keep the stored password")
-	}
-}
-
 func TestUninstallOnAFreshMachineIsNotAnError(t *testing.T) {
 	testutil.NewSandbox(t)
 	if err := setup.Uninstall(false, io.Discard); err != nil {
@@ -293,9 +250,8 @@ func TestUninstallOnAFreshMachineIsNotAnError(t *testing.T) {
 }
 
 func TestInstallLeavesNoTempFilesBehind(t *testing.T) {
-	// The binary, hook shim, and askpass shim are all written via
-	// temp-file-then-rename; a successful install must not leave the .tmp
-	// siblings lying around.
+	// The binary and hook shim are both written via temp-file-then-rename; a
+	// successful install must not leave the .tmp siblings lying around.
 	sb := testutil.NewSandbox(t)
 	sb.StubSSH(0)
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
@@ -306,7 +262,6 @@ func TestInstallLeavesNoTempFilesBehind(t *testing.T) {
 	for _, p := range []string{
 		config.BinPath() + ".tmp",
 		filepath.Join(config.HooksDir(), "post-commit") + ".tmp",
-		config.AskpassPath() + ".tmp",
 	} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("temp file left behind: %s", p)

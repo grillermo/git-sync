@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -39,9 +38,6 @@ func NewSandbox(t *testing.T) *Sandbox {
 
 	t.Setenv("HOME", sb.Home)
 	t.Setenv("GITSYNC_HOME", sb.GitsyncHome)
-	// Never the real keychain: it is shared OS state, and reading it on macOS
-	// can raise a GUI prompt in the middle of a test run.
-	t.Setenv("GITSYNC_SECRET_BACKEND", "file")
 	// Belt and braces: HOME alone redirects the global config on git >= 2.32,
 	// but be explicit so a stray HOME leak can never write the real one.
 	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(sb.Home, ".gitconfig"))
@@ -152,47 +148,6 @@ func (sb *Sandbox) StubSSHFailing(code int, stderrMsg string) {
 		"echo " + shellQuote(stderrMsg) + " >&2\n" +
 		"exit " + strconv.Itoa(code) + "\n"
 	sb.installSSHStub(script)
-}
-
-// StubSSHPassword is a fake ssh that rejects every attempt until
-// $SSH_ASKPASS yields want, at which point it succeeds. Once accepted, it
-// answers the uname/$HOME probes Probe() sends with canned replies (like
-// StubSSHScripted), so a caller that verifies a password by calling Probe()
-// again sees a fully successful probe, not just a bare exit 0.
-func (sb *Sandbox) StubSSHPassword(want string) {
-	sb.T.Helper()
-	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$*\" >> \"$GITSYNC_HOME/ssh-calls.log\"\n" +
-		"if [ -z \"$SSH_ASKPASS\" ]; then\n" +
-		"  echo 'Permission denied (publickey,password).' >&2\n" +
-		"  exit 5\n" +
-		"fi\n" +
-		"got=$(\"$SSH_ASKPASS\" 2>/dev/null)\n" +
-		"if [ \"$got\" != " + shellQuote(want) + " ]; then\n" +
-		"  echo 'Permission denied, please try again.' >&2\n" +
-		"  exit 5\n" +
-		"fi\n" +
-		"case \"$*\" in\n" +
-		"  *uname*) printf '%s' " + shellQuote(localUnameForTest()) + " ;;\n" +
-		"  *'$HOME'*) printf '%s' '/home/peer' ;;\n" +
-		"esac\n" +
-		"exit 0\n"
-	sb.installSSHStub(script)
-}
-
-// localUnameForTest mimics `uname -sm` for the platform running the test, so
-// StubSSHPassword's canned reply passes checkSamePlatform when a caller goes
-// on to provision the peer.
-func localUnameForTest() string {
-	os := "Linux"
-	if runtime.GOOS == "darwin" {
-		os = "Darwin"
-	}
-	arch := runtime.GOARCH
-	if arch == "amd64" {
-		arch = "x86_64"
-	}
-	return os + " " + arch
 }
 
 // StubSSHScripted installs a fake ssh that answers the two probe commands

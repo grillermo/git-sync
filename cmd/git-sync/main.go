@@ -44,11 +44,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdPush(args[1:], stderr)
 	case "receive":
 		return cmdReceive(args[1:], stderr)
-	// Invoked by ssh (askpass) and by the peer over ssh (savepass); see Task 12.
-	case "askpass":
-		return cmdAskpass(args[1:], stdout, stderr)
-	case "savepass":
-		return cmdSavepass(args[1:], os.Stdin, stderr)
 
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)

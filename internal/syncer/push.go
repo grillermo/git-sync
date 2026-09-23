@@ -80,9 +80,6 @@ func Push(rel string) int {
 }
 
 // notify asks the peer to run its own receive for this repo.
-//
-// Goes through sshx so a peer that needs a password works here too: if one
-// is stored, sshx arms the askpass helper instead of BatchMode=yes.
 func notify(cfg config.Config, rel, branch string) {
 	target := cfg.PeerUser + "@" + cfg.PeerHost
 	remote := fmt.Sprintf("~/.gitsync/bin/git-sync receive '%s'", rel)

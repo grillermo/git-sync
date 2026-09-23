@@ -34,7 +34,7 @@ func TestRunUsageHidesMachineSubcommands(t *testing.T) {
 	// human. Keep them out of the usage text so the CLI stays legible.
 	var out strings.Builder
 	run(nil, &out, &out)
-	for _, hidden := range []string{"receive", "hook", "askpass", "savepass"} {
+	for _, hidden := range []string{"receive", "hook"} {
 		if strings.Contains(out.String(), hidden) {
 			t.Errorf("usage should not advertise %q:\n%s", hidden, out.String())
 		}

@@ -147,7 +147,6 @@ cmd="$1"
 HOME=%s GITSYNC_HOME=%s GIT_CONFIG_GLOBAL=%s GIT_CONFIG_SYSTEM=/dev/null \
   GIT_AUTHOR_NAME='git-sync test' GIT_AUTHOR_EMAIL='test@example.com' \
   GIT_COMMITTER_NAME='git-sync test' GIT_COMMITTER_EMAIL='test@example.com' \
-  GITSYNC_SECRET_BACKEND=file \
   sh -c "$cmd"
 `,
 		shellQuote(peer.Home), shellQuote(peer.Gitsync), shellQuote(filepath.Join(peer.Home, ".gitconfig")))

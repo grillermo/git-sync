@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/grillermo/git-sync/internal/config"
-	"github.com/grillermo/git-sync/internal/secret"
 )
 
 type Options struct {
@@ -34,14 +33,6 @@ type Options struct {
 const hookShimTemplate = `#!/bin/sh
 # Installed by git-sync. Removed by 'git-sync uninstall'.
 exec %q hook post-commit
-`
-
-// askpassShimTemplate is what ssh execs when it needs the peer's password.
-// SSH_ASKPASS names one executable and passes it the prompt text, so the
-// account has to be baked in here rather than passed at call time.
-const askpassShimTemplate = `#!/bin/sh
-# Installed by git-sync. Prints the peer's ssh password from the keychain.
-exec %q askpass %q "$@"
 `
 
 func Install(o Options) error {
@@ -82,22 +73,15 @@ func Install(o Options) error {
 		return fmt.Errorf("installing the binary: %w", err)
 	}
 
-	// The hook shim and askpass shim are what git and ssh actually exec, so
-	// they get the same temp-file-then-rename treatment as the binary: a
-	// concurrent commit or ssh invocation must never see a half-written file.
+	// The hook shim is what git actually execs, so it gets the same
+	// temp-file-then-rename treatment as the binary: a concurrent commit
+	// must never see a half-written file.
 	shim := fmt.Sprintf(hookShimTemplate, config.BinPath())
 	hookPath := filepath.Join(config.HooksDir(), "post-commit")
 	if err := writeFileAtomic(hookPath, []byte(shim), 0o755); err != nil {
 		return fmt.Errorf("writing the hook: %w", err)
 	}
 
-	// The askpass shim (Task 12). Written unconditionally and harmless when
-	// key auth is in use: nothing sets SSH_ASKPASS unless a password is
-	// actually stored. 0700 - it reads a credential out of the keychain.
-	askpass := fmt.Sprintf(askpassShimTemplate, config.BinPath(), o.PeerUser+"@"+o.PeerHost)
-	if err := writeFileAtomic(config.AskpassPath(), []byte(askpass), 0o700); err != nil {
-		return fmt.Errorf("writing the askpass helper: %w", err)
-	}
 	fmt.Fprintf(o.Out, "installed into %s\n", config.Home())
 
 	cfg := config.Config{
@@ -149,7 +133,8 @@ func Install(o Options) error {
 	return nil
 }
 
-// Uninstall removes the hook, the binary, and the askpass shim. It keeps
+// Uninstall removes the hook, the binary, and config.AskpassPath (left over
+// from the password era on an upgrade from an older install). It keeps
 // config.toml and activity.jsonl so `git-sync report` still works on your
 // history, unless purge is set.
 func Uninstall(purge bool, out io.Writer) error {
@@ -167,7 +152,10 @@ func Uninstall(purge bool, out io.Writer) error {
 		fmt.Fprintln(out, "unset global core.hooksPath")
 	}
 
-	for _, p := range []string{config.HooksDir(), filepath.Dir(config.BinPath()), config.LocksDir(), config.AskpassPath()} {
+	for _, p := range []string{
+		config.HooksDir(), filepath.Dir(config.BinPath()), config.LocksDir(),
+		config.AskpassPath(), // left over from the password era; removed on upgrade
+	} {
 		if err := os.RemoveAll(p); err != nil {
 			return err
 		}
@@ -175,9 +163,6 @@ func Uninstall(purge bool, out io.Writer) error {
 	fmt.Fprintln(out, "removed hooks and binary")
 
 	if purge {
-		if cfg, err := config.Load(); err == nil && cfg.PeerUser != "" && cfg.PeerHost != "" {
-			_ = secret.Delete(cfg.PeerUser + "@" + cfg.PeerHost)
-		}
 		if err := os.RemoveAll(config.Home()); err != nil {
 			return err
 		}
