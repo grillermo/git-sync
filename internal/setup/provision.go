@@ -93,7 +93,7 @@ func ProvisionPeer(o PeerOptions) error {
 	// 6. The hook shim, written then renamed for the same reason as the binary:
 	//    a commit landing on the peer mid-transfer must never exec a half-written
 	//    shim.
-	shim := fmt.Sprintf(hookShimTemplate, peerGitsync+"/bin/git-sync")
+	shim := hookShim(peerGitsync+"/bin/git-sync", "post-commit")
 	hookCmd := fmt.Sprintf(
 		"cat > %s/hooks/post-commit.tmp && chmod +x %s/hooks/post-commit.tmp && mv %s/hooks/post-commit.tmp %s/hooks/post-commit",
 		peerGitsync, peerGitsync, peerGitsync, peerGitsync)

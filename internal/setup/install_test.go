@@ -290,3 +290,38 @@ func TestHookShimInvokesTheInstalledBinary(t *testing.T) {
 		t.Errorf("shim called the binary with %q, want 'hook post-commit'", b)
 	}
 }
+
+func TestInstallWritesAllThreeHookShims(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	if err := setup.Install(setup.Options{
+		BaseDir: sb.BaseDir, NoPeer: true, Self: testutil.WriteScript(t, sb, "fake-git-sync", "#!/bin/sh\n"),
+	}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	for _, name := range []string{"post-commit", "pre-commit", "pre-push"} {
+		path := filepath.Join(config.HooksDir(), name)
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("hook %s not installed: %v", name, err)
+		}
+		if fi.Mode().Perm()&0o111 == 0 {
+			t.Errorf("hook %s is not executable (%v)", name, fi.Mode())
+		}
+		testutil.AssertFileContains(t, path, "hook "+name)
+	}
+}
+
+func TestUninstallRemovesAllThreeHookShims(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	if err := setup.Install(setup.Options{
+		BaseDir: sb.BaseDir, NoPeer: true, Self: testutil.WriteScript(t, sb, "fake-git-sync", "#!/bin/sh\n"),
+	}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := setup.Uninstall(false, io.Discard); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, err := os.Stat(config.HooksDir()); !os.IsNotExist(err) {
+		t.Errorf("hooks dir survived uninstall: %v", err)
+	}
+}

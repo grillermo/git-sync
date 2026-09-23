@@ -27,13 +27,21 @@ type Options struct {
 	PeerBaseDir string
 }
 
+// HookNames are the git hooks git-sync installs. post-commit broadcasts;
+// the other two refuse to run while this machine is receiving that repo.
+var HookNames = []string{"post-commit", "pre-commit", "pre-push"}
+
 // hookShim is what git actually executes on every commit. It is a shell stub
 // rather than the binary itself so that re-installing a new binary cannot
 // race a commit that is executing the old one.
 const hookShimTemplate = `#!/bin/sh
 # Installed by git-sync. Removed by 'git-sync uninstall'.
-exec %q hook post-commit
+exec %q hook %s
 `
+
+func hookShim(binPath, hookName string) string {
+	return fmt.Sprintf(hookShimTemplate, binPath, hookName)
+}
 
 func Install(o Options) error {
 	if o.Out == nil {
@@ -73,13 +81,15 @@ func Install(o Options) error {
 		return fmt.Errorf("installing the binary: %w", err)
 	}
 
-	// The hook shim is what git actually execs, so it gets the same
+	// The hook shims are what git actually execs, so each gets the same
 	// temp-file-then-rename treatment as the binary: a concurrent commit
 	// must never see a half-written file.
-	shim := fmt.Sprintf(hookShimTemplate, config.BinPath())
-	hookPath := filepath.Join(config.HooksDir(), "post-commit")
-	if err := writeFileAtomic(hookPath, []byte(shim), 0o755); err != nil {
-		return fmt.Errorf("writing the hook: %w", err)
+	for _, name := range HookNames {
+		shim := hookShim(config.BinPath(), name)
+		hookPath := filepath.Join(config.HooksDir(), name)
+		if err := writeFileAtomic(hookPath, []byte(shim), 0o755); err != nil {
+			return fmt.Errorf("writing the %s hook: %w", name, err)
+		}
 	}
 
 	fmt.Fprintf(o.Out, "installed into %s\n", config.Home())
