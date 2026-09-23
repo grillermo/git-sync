@@ -6,6 +6,7 @@ package gitcmd
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -17,6 +18,10 @@ import (
 func Run(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	// Our own git calls must not be refused by our own pre-commit/pre-push
+	// hooks: those exist to stop the *user* committing mid-receive, not to
+	// stop git-sync pushing.
+	cmd.Env = append(os.Environ(), "GITSYNC_INTERNAL=1")
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {

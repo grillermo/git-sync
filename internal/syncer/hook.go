@@ -4,13 +4,16 @@ package syncer
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/gitcmd"
+	"github.com/grillermo/git-sync/internal/lock"
 )
 
 // Spawner starts a background push for a repo. Injected so tests can observe
@@ -41,18 +44,7 @@ func Hook(dir string, spawn Spawner) error {
 		return nil // not a git repo; nothing to sync
 	}
 
-	// git resolves symlinks in --show-toplevel (e.g. macOS's /var ->
-	// /private/var), but base_dir as configured is not resolved. Compare
-	// resolved forms so a symlinked ancestor doesn't look like "outside
-	// base_dir".
-	base := cfg.BaseDir
-	if resolved, err := filepath.EvalSymlinks(base); err == nil {
-		base = resolved
-	}
-	rc := cfg
-	rc.BaseDir = base
-
-	rel, err := rc.RepoRel(root)
+	rel, err := repoRel(cfg, root)
 	if err != nil {
 		_ = activity.Append(activity.Event{
 			Repo: root, Op: activity.OpHook, Status: activity.StatusSkip,
@@ -68,7 +60,85 @@ func Hook(dir string, spawn Spawner) error {
 		return nil
 	}
 
+	// A commit made while this machine is applying someone else's changes
+	// must not broadcast: for this repo we are a receiver, not a
+	// broadcaster. --no-verify skips pre-commit but not post-commit, which
+	// is exactly the case this catches.
+	if owner, held := lock.Held(rel); held {
+		_ = activity.Append(activity.Event{
+			Repo: rel, Op: activity.OpHook, Status: activity.StatusWarn,
+			Peer: owner.From,
+			Msg:  "committed while receiving from " + owner.From + ", not broadcast",
+		})
+		return nil
+	}
+
 	return spawn(rel)
+}
+
+// repoRel resolves root's relpath under cfg's base_dir. Shared by Hook and
+// selectedRel so the symlink-resolution rule below lives in exactly one
+// place.
+//
+// git resolves symlinks in --show-toplevel (e.g. macOS's /var ->
+// /private/var), but base_dir as configured is not resolved. Compare
+// resolved forms so a symlinked ancestor doesn't look like "outside
+// base_dir".
+func repoRel(cfg config.Config, root string) (string, error) {
+	base := cfg.BaseDir
+	if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		base = resolved
+	}
+	rc := cfg
+	rc.BaseDir = base
+	return rc.RepoRel(root)
+}
+
+// Block is the body of the pre-commit and pre-push hooks: it refuses to let
+// the user commit or push in a repo this machine is currently receiving.
+//
+// It fails open in every other case. git-sync being broken - no config, an
+// unreadable one, a repo outside base_dir - must never stop someone
+// committing; only a lock that is genuinely held blocks.
+func Block(dir string, w io.Writer) int {
+	if os.Getenv("GITSYNC_INTERNAL") != "" {
+		return 0 // git-sync's own push, not the user's
+	}
+	rel, ok := selectedRel(dir)
+	if !ok {
+		return 0
+	}
+	owner, held := lock.Held(rel)
+	if !held {
+		return 0
+	}
+	from := owner.From
+	if from == "" {
+		from = "another machine"
+	}
+	fmt.Fprintf(w, "git-sync: %s is receiving changes from %s (started %s ago).\n",
+		rel, from, owner.Age().Round(time.Second))
+	fmt.Fprintf(w, "Wait a moment and try again. If this is stuck: git-sync unlock %s\n", rel)
+	return 1
+}
+
+// selectedRel is the repo-identification half of Hook: the relpath of the
+// repo containing dir, and whether it is one git-sync syncs. Every error is
+// "not ours", because both callers must carry on regardless.
+func selectedRel(dir string) (string, bool) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "", false
+	}
+	root, err := gitcmd.Toplevel(dir)
+	if err != nil {
+		return "", false
+	}
+	rel, err := repoRel(cfg, root)
+	if err != nil {
+		return "", false
+	}
+	return rel, cfg.IsSelected(rel)
 }
 
 // SpawnDetached starts `self push <rel>` in its own session and returns at

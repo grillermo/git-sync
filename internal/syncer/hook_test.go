@@ -1,13 +1,17 @@
 package syncer_test
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
+	"github.com/grillermo/git-sync/internal/lock"
 	"github.com/grillermo/git-sync/internal/syncer"
 	"github.com/grillermo/git-sync/internal/testutil"
 )
@@ -156,4 +160,104 @@ func TestSpawnDetachedSurvivesItsParent(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Error("the detached child never completed")
+}
+
+func TestBlockRefusesWhileTheRepoIsBeingReceived(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+
+	l, err := lock.AcquireFrom("group/proj", "laptop.local", time.Second)
+	if err != nil {
+		t.Fatalf("AcquireFrom: %v", err)
+	}
+	defer l.Release()
+
+	var out bytes.Buffer
+	if code := syncer.Block(repo, &out); code != 1 {
+		t.Fatalf("Block = %d, want 1 while receiving", code)
+	}
+	for _, want := range []string{"group/proj", "laptop.local", "git-sync unlock"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("message %q does not mention %q", out.String(), want)
+		}
+	}
+}
+
+func TestBlockAllowsWhenNothingIsBeingReceived(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+
+	var out bytes.Buffer
+	if code := syncer.Block(repo, &out); code != 0 {
+		t.Fatalf("Block = %d, want 0", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("an allowed commit must say nothing, got %q", out.String())
+	}
+}
+
+func TestBlockAllowsAnUnselectedRepo(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfigWithRepos(t, sb, "peer.example", "tester", []string{"other/thing"})
+	// A lock under this repo's name must not matter: it is not synced.
+	l, _ := lock.AcquireFrom("group/proj", "laptop.local", time.Second)
+	defer l.Release()
+
+	if code := syncer.Block(repo, io.Discard); code != 0 {
+		t.Fatalf("Block = %d, want 0 for an unselected repo", code)
+	}
+}
+
+// Review Focus 5: git-sync being broken must never stop the user committing.
+func TestBlockAllowsWhenGitSyncIsBroken(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	// No config at all.
+	if code := syncer.Block(repo, io.Discard); code != 0 {
+		t.Fatalf("Block = %d with no config, want 0", code)
+	}
+	// A config that is not parseable.
+	if err := os.WriteFile(filepath.Join(sb.GitsyncHome, "config.toml"), []byte("nonsense = ["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := syncer.Block(repo, io.Discard); code != 0 {
+		t.Fatalf("Block = %d with a corrupt config, want 0", code)
+	}
+	// A directory that is not a repo at all.
+	if code := syncer.Block(sb.Home, io.Discard); code != 0 {
+		t.Fatalf("Block = %d outside a repo, want 0", code)
+	}
+}
+
+func TestBlockAllowsGitSyncsOwnGitCommands(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	l, _ := lock.AcquireFrom("group/proj", "laptop.local", time.Second)
+	defer l.Release()
+
+	t.Setenv("GITSYNC_INTERNAL", "1")
+	if code := syncer.Block(repo, io.Discard); code != 0 {
+		t.Fatalf("Block = %d for git-sync's own git call, want 0", code)
+	}
+}
+
+func TestHookDoesNotBroadcastWhileReceiving(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	l, _ := lock.AcquireFrom("group/proj", "laptop.local", time.Second)
+	defer l.Release()
+
+	spawned := false
+	if err := syncer.Hook(repo, func(string) error { spawned = true; return nil }); err != nil {
+		t.Fatalf("Hook: %v", err)
+	}
+	if spawned {
+		t.Error("a commit made during a receive must not broadcast")
+	}
+	testutil.AssertEvent(t, activity.OpHook, activity.StatusWarn, "not broadcast")
 }

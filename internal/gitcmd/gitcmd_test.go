@@ -1,6 +1,7 @@
 package gitcmd_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -217,5 +218,24 @@ func TestAheadBehindCountsBothDirections(t *testing.T) {
 	ahead, behind, err = gitcmd.AheadBehind(repo, "origin", "main")
 	if err != nil || ahead != 1 || behind != 1 {
 		t.Fatalf("diverged: got %d/%d, %v; want 1/1, nil", ahead, behind, err)
+	}
+}
+
+func TestRunMarksItsGitCommandsAsInternal(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	// A hook that fails unless it is told this is git-sync's own git call.
+	hooks := filepath.Join(sb.Home, "hooks")
+	testutil.MkdirAll(t, hooks)
+	testutil.WriteFileIn(t, hooks, "pre-commit",
+		"#!/bin/sh\n[ -n \"$GITSYNC_INTERNAL\" ] || exit 1\n")
+	if err := os.Chmod(filepath.Join(hooks, "pre-commit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sb.Git(repo, "config", "core.hooksPath", hooks)
+
+	testutil.AppendFileIn(t, repo, "README.md", "x\n")
+	if _, err := gitcmd.Run(repo, "commit", "-am", "internal"); err != nil {
+		t.Fatalf("gitcmd.Run must set GITSYNC_INTERNAL: %v", err)
 	}
 }
