@@ -4,8 +4,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/grillermo/git-sync/internal/activity"
+	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/syncer"
 	"github.com/grillermo/git-sync/internal/testutil"
 )
@@ -182,6 +184,78 @@ func TestPushRejectsAnEscapingRelpath(t *testing.T) {
 	}
 	if sb.SSHCalls() != "" {
 		t.Error("must not ssh with an escaping relpath")
+	}
+}
+
+func TestPushNotifiesEveryPeer(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfigWithPeers(t, sb, []config.Peer{
+		{Host: "b.local", User: "t"},
+		{Host: "c.local", User: "t"},
+		{Host: "d.local", User: "t"},
+	}, []string{"group/proj"})
+	sb.StubSSH(0)
+	testutil.Commit(t, sb, repo, "sync me")
+
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Fatalf("Push = %d, want 0", code)
+	}
+	calls := sb.SSHCalls()
+	for _, host := range []string{"b.local", "c.local", "d.local"} {
+		if !strings.Contains(calls, host) {
+			t.Errorf("peer %s was never notified; calls:\n%s", host, calls)
+		}
+	}
+	events, _ := activity.Read()
+	n := 0
+	for _, e := range events {
+		if e.Op == activity.OpNotify && e.Status == activity.StatusOK {
+			n++
+		}
+	}
+	if n != 3 {
+		t.Errorf("got %d ok notify events, want one per peer", n)
+	}
+}
+
+func TestPushKeepsGoingWhenOnePeerIsUnreachable(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfigWithPeers(t, sb, []config.Peer{
+		{Host: "up-one.local", User: "t"},
+		{Host: "down.local", User: "t"},
+	}, []string{"group/proj"})
+	// Exit 255 only for the host whose name contains "down".
+	sb.StubSSHScripted(map[string]string{"*down.local*": "exit 255"}, 0)
+	testutil.Commit(t, sb, repo, "sync me")
+
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Fatalf("Push = %d, want 0", code)
+	}
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOK, "up-one.local")
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusError, "down.local")
+}
+
+func TestPushNotifiesPeersConcurrently(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfigWithPeers(t, sb, []config.Peer{
+		{Host: "b.local", User: "t"},
+		{Host: "c.local", User: "t"},
+		{Host: "d.local", User: "t"},
+	}, []string{"group/proj"})
+	// Each ssh sleeps 300ms. Sequentially that is 900ms+; in parallel it is
+	// one sleep. The bound is generous so a slow machine cannot flake it.
+	sb.StubSSHScripted(map[string]string{"*": "sleep 0.3"}, 0)
+	testutil.Commit(t, sb, repo, "sync me")
+
+	start := time.Now()
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Fatalf("Push = %d, want 0", code)
+	}
+	if elapsed := time.Since(start); elapsed > 700*time.Millisecond {
+		t.Errorf("notifications took %v; they are not running in parallel", elapsed)
 	}
 }
 

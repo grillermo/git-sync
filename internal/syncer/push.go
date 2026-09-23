@@ -3,8 +3,10 @@ package syncer
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
@@ -75,37 +77,73 @@ func Push(rel string) int {
 		Branch: branch, Msg: "pushed " + branch + " to " + remote,
 	})
 
-	notify(cfg, rel, branch)
+	notifyAll(cfg, rel, branch)
 	return 0
 }
 
-// notify asks the peer to run its own receive for this repo.
-func notify(cfg config.Config, rel, branch string) {
-	target := cfg.PeerUser + "@" + cfg.PeerHost
-	remote := fmt.Sprintf("~/.gitsync/bin/git-sync receive '%s'", rel)
+// notifyAll tells every other machine to pull what we just pushed. The peers
+// are independent: one unreachable machine must not delay or affect the
+// others, so they go out concurrently and each gets its own event.
+func notifyAll(cfg config.Config, rel, branch string) {
+	var wg sync.WaitGroup
+	for _, p := range cfg.PeerList() {
+		wg.Add(1)
+		go func(p config.Peer) {
+			defer wg.Done()
+			notifyPeer(cfg, p, rel, branch)
+		}(p)
+	}
+	wg.Wait()
+}
 
-	cmd := sshx.Command(target, remote)
+// notifyPeer asks one peer to run its own receive for this repo.
+func notifyPeer(cfg config.Config, p config.Peer, rel, branch string) {
+	self, _ := os.Hostname()
+	remote := fmt.Sprintf("~/.gitsync/bin/git-sync receive '%s' --from '%s'", rel, sanitizeHost(self))
+
+	cmd := sshx.Command(p.Target(), remote)
 	out, err := cmd.CombinedOutput()
 
-	ev := activity.Event{Repo: rel, Op: activity.OpNotify, Branch: branch, Peer: cfg.PeerHost}
+	ev := activity.Event{Repo: rel, Op: activity.OpNotify, Branch: branch, Peer: p.Host}
 	switch code := exitCode(err); {
 	case err == nil:
-		ev.Status, ev.Msg = activity.StatusOK, "peer "+cfg.PeerHost+" synced"
+		ev.Status, ev.Msg = activity.StatusOK, "peer "+p.Host+" synced"
 	case code == ExitRepoNotHere:
 		// Expected and harmless: the peer has never cloned this repo. No
 		// auto-clone, no retry - just say so plainly rather than claiming a
 		// sync that never happened.
-		ev.Status, ev.Msg = activity.StatusSkip, "peer has no copy of this repo, nothing to sync"
+		ev.Status, ev.Msg = activity.StatusSkip, "peer "+p.Host+" has no copy of this repo, nothing to sync"
 	case code == 255:
-		ev.Status, ev.Msg = activity.StatusError, "peer "+cfg.PeerHost+" unreachable"
+		ev.Status, ev.Msg = activity.StatusError, "peer "+p.Host+" unreachable"
 	default:
 		ev.Status = activity.StatusError
-		ev.Msg = fmt.Sprintf("peer receive failed (exit %d)", code)
+		ev.Msg = fmt.Sprintf("peer %s receive failed (exit %d)", p.Host, code)
 	}
+	// activity.Append is safe to call concurrently without a lock: the log
+	// is append-only and each line is kept under PIPE_BUF, so concurrent
+	// O_APPEND writes from these goroutines never interleave.
 	_ = activity.Append(ev)
 	if err != nil {
-		activity.AppendDebug("ssh " + target + ": " + strings.TrimSpace(string(out)))
+		activity.AppendDebug("ssh " + p.Target() + ": " + strings.TrimSpace(string(out)))
 	}
+}
+
+// sanitizeHost reduces a hostname to the characters that are safe both in a
+// single-quoted remote command and in a message printed to a terminal.
+func sanitizeHost(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '.' || r == '-' || r == '_':
+			return r
+		}
+		return -1
+	}, s)
+	if len(s) > 64 {
+		s = s[:64]
+	}
+	return s
 }
 
 func exitCode(err error) int {

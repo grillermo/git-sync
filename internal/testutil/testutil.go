@@ -152,8 +152,20 @@ func (sb *Sandbox) StubSSHFailing(code int, stderrMsg string) {
 
 // StubSSHScripted installs a fake ssh that answers the two probe commands
 // provisioning sends, records every invocation, and streams any stdin it is
-// given to GitsyncHome/ssh-stdin-<n>. replies maps a substring of the remote
-// command to the stdout the stub should produce.
+// given to GitsyncHome/ssh-stdin-<n>. replies maps a key to what the stub
+// should do when the remote command matches it.
+//
+// Two forms of key are supported:
+//
+//   - A plain substring (no "*" in it), e.g. "uname" or "$HOME": matched as
+//     a substring of the remote command (auto-wrapped and escaped), and the
+//     reply is literal stdout text the stub prints back.
+//   - A key containing a literal "*", e.g. "*down.local*" or "*": used
+//     verbatim as the shell `case` glob pattern, and the reply is a raw
+//     shell snippet the stub *runs* rather than prints - e.g. "exit 255" to
+//     fail only that match, or "sleep 0.3" to delay it. This form exists
+//     because a plain substring reply cannot express "exit a different code
+//     for just this one call", which per-peer notify tests need.
 func (sb *Sandbox) StubSSHScripted(replies map[string]string, exitCode int) {
 	sb.T.Helper()
 	var b strings.Builder
@@ -164,6 +176,10 @@ func (sb *Sandbox) StubSSHScripted(replies map[string]string, exitCode int) {
 	b.WriteString("if [ ! -t 0 ]; then cat > \"$GITSYNC_HOME/ssh-stdin-$n\"; fi\n")
 	b.WriteString("case \"$*\" in\n")
 	for substr, reply := range replies {
+		if strings.Contains(substr, "*") {
+			fmt.Fprintf(&b, "  %s) %s ;;\n", substr, reply)
+			continue
+		}
 		fmt.Fprintf(&b, "  *%s*) printf '%%s' %s ;;\n", shellGlobEscape(substr), shellQuote(reply))
 	}
 	b.WriteString("esac\n")
@@ -260,6 +276,19 @@ func SaveConfigWithRepos(t *testing.T, sb *Sandbox, peerHost, peerUser string, r
 	}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+}
+
+// SaveConfigWithPeers writes a config naming several machines. repos may be
+// nil, in which case every repo under base_dir is selected.
+func SaveConfigWithPeers(t *testing.T, sb *Sandbox, peers []config.Peer, repos []string) {
+	t.Helper()
+	if repos == nil {
+		repos = discoverRepos(t, sb)
+	}
+	cfg := config.Config{BaseDir: sb.BaseDir, Peers: peers, Repos: repos}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("saving config: %v", err)
 	}
 }
 
