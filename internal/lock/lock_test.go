@@ -100,6 +100,34 @@ func TestStaleLockIsReclaimed(t *testing.T) {
 	}
 }
 
+func TestStaleLockWithOwnerFileIsReclaimed(t *testing.T) {
+	testutil.NewSandbox(t)
+	// A real lock via AcquireFrom leaves an owner file in the lock dir,
+	// unlike a hand-built directory. Reclaim must remove the whole
+	// directory (os.RemoveAll), not just try to os.Remove an empty one -
+	// which fails silently (ENOTEMPTY) and would permanently wedge the
+	// lock in production.
+	first, err := lock.AcquireFrom("group/proj", "laptop.local", time.Second)
+	if err != nil {
+		t.Fatalf("AcquireFrom: %v", err)
+	}
+	dir := first.Dir()
+	old := time.Now().Add(-2 * lock.StaleAfter)
+	if err := os.Chtimes(dir, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	start := time.Now()
+	second, err := lock.Acquire("group/proj", 10*time.Second)
+	if err != nil {
+		t.Fatalf("a stale lock with an owner file should be reclaimed, not waited out: %v", err)
+	}
+	defer second.Release()
+	if time.Since(start) > 2*time.Second {
+		t.Error("reclaiming a stale lock should be immediate")
+	}
+}
+
 func TestOnlyOneHolderAtATime(t *testing.T) {
 	testutil.NewSandbox(t)
 	var mu sync.Mutex
