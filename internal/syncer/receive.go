@@ -11,13 +11,17 @@ import (
 )
 
 // Receive applies whatever the peer just pushed to the local copy of rel.
-// Invoked remotely, over ssh, by the peer's push.
+// Invoked remotely, over ssh, by the peer's push. from names the notifying
+// machine; it arrives over ssh, so it is sanitised before it is recorded or
+// shown. It is used only for the lock's owner record and the message the
+// blocking hooks print.
 //
 // It never commits and never pushes, so it cannot re-trigger the peer's
 // post-commit hook: there is no feedback loop between the two machines.
 //
 // Returns a process exit code; ExitRepoNotHere when this machine has no copy.
-func Receive(rel string) int {
+func Receive(rel, from string) int {
+	from = sanitizeHost(from)
 	cfg, err := config.Load()
 	if err != nil {
 		return 1
@@ -54,7 +58,7 @@ func Receive(rel string) int {
 		return ExitRepoNotHere
 	}
 
-	l, err := lock.Acquire(rel, lockTimeout())
+	l, err := lock.AcquireFrom(rel, from, lockTimeout())
 	if err != nil {
 		if lock.IsBusy(err) {
 			// Safe to drop: the holder brings the repo fully up to date.
@@ -68,7 +72,32 @@ func Receive(rel string) int {
 	}
 	defer l.Release()
 
+	// A large fetch can outlast StaleAfter. While that happens the lock must
+	// keep looking alive, or a commit hook would decide the holder is dead
+	// and let a commit through mid-merge.
+	stop := heartbeat(l)
+	defer stop()
+
 	return syncRepo(cfg, rel, dir)
+}
+
+// heartbeat restamps the lock every minute until the returned function is
+// called.
+func heartbeat(l *lock.Lock) func() {
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				_ = l.Refresh()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 // syncRepo is the spec's algorithm, inside the lock.

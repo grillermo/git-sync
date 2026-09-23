@@ -452,9 +452,27 @@ func cmdPush(args []string, stderr io.Writer) int {
 }
 
 func cmdReceive(args []string, stderr io.Writer) int {
-	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: git-sync receive <repo>")
+	// `receive <repo> --from <host>`: flag.Parse stops at <repo>, so pull a
+	// leading non-flag argument out before parsing.
+	var rest []string
+	repo := ""
+	for _, a := range args {
+		if repo == "" && !strings.HasPrefix(a, "-") {
+			repo = a
+			continue
+		}
+		rest = append(rest, a)
+	}
+
+	fs := flag.NewFlagSet("receive", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	from := fs.String("from", "", "the machine that sent this notification")
+	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
-	return syncer.Receive(args[0])
+	if repo == "" || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: git-sync receive <repo> [--from <host>]")
+		return 2
+	}
+	return syncer.Receive(repo, *from)
 }

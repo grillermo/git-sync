@@ -20,7 +20,7 @@ func TestReceiveFastForwardsACleanTree(t *testing.T) {
 	sb.PeerClone("group/proj")
 	sb.PeerCommit("group/proj", "from-peer")
 
-	if code := syncer.Receive("group/proj"); code != 0 {
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
 		t.Fatalf("Receive = %d, want 0", code)
 	}
 	if out := sb.Git(repo, "log", "--oneline"); !strings.Contains(out, "from-peer") {
@@ -34,7 +34,7 @@ func TestReceiveIsAHarmlessNoOpWhenUpToDate(t *testing.T) {
 	repo := sb.MakeRepo("group/proj")
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
 
-	if code := syncer.Receive("group/proj"); code != 0 {
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
 		t.Fatalf("Receive = %d, want 0", code)
 	}
 	if out := sb.Git(repo, "status", "--porcelain"); out != "" {
@@ -51,7 +51,7 @@ func TestReceiveStashesFastForwardsAndRestores(t *testing.T) {
 	sb.PeerCommit("group/proj", "from-peer")
 	sb.Dirty(repo)
 
-	if code := syncer.Receive("group/proj"); code != 0 {
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
 		t.Fatalf("Receive = %d, want 0", code)
 	}
 	if out := sb.Git(repo, "log", "--oneline"); !strings.Contains(out, "from-peer") {
@@ -78,7 +78,7 @@ func TestReceiveRestoresTheStashEvenWhenHistoryDiverged(t *testing.T) {
 	sb.Git(repo, "commit", "-qm", "divergent local commit")
 	sb.Dirty(repo)
 
-	if code := syncer.Receive("group/proj"); code != 0 {
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
 		t.Fatalf("Receive = %d, want 0", code)
 	}
 	testutil.AssertEvent(t, activity.OpReceive, activity.StatusWarn, "diverged")
@@ -110,7 +110,7 @@ func TestReceiveLeavesAConflictingStashInPlace(t *testing.T) {
 	// Edit the same file the peer changed, so the pop must conflict.
 	testutil.AppendFileIn(t, repo, "README.md", "local conflicting edit\n")
 
-	if code := syncer.Receive("group/proj"); code != 0 {
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
 		t.Fatalf("Receive = %d, want 0", code)
 	}
 	testutil.AssertEvent(t, activity.OpReceive, activity.StatusWarn, "stash pop conflicted")
@@ -124,7 +124,7 @@ func TestReceiveSkipsARepoNotOnThisMachine(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
 
-	if code := syncer.Receive("group/ghost"); code != syncer.ExitRepoNotHere {
+	if code := syncer.Receive("group/ghost", "peer.example"); code != syncer.ExitRepoNotHere {
 		t.Errorf("Receive = %d, want %d so ssh carries it back to the pusher",
 			code, syncer.ExitRepoNotHere)
 	}
@@ -136,7 +136,7 @@ func TestReceiveDeclinesAnUnselectedRepo(t *testing.T) {
 	sb.MakeRepo("group/proj") // present on disk, but not ticked here
 	testutil.SaveConfigWithRepos(t, sb, "peer.example", "tester", []string{"other/thing"})
 
-	if code := syncer.Receive("group/proj"); code != syncer.ExitRepoNotHere {
+	if code := syncer.Receive("group/proj", "peer.example"); code != syncer.ExitRepoNotHere {
 		t.Errorf("Receive = %d, want %d so the pusher records a harmless skip",
 			code, syncer.ExitRepoNotHere)
 	}
@@ -148,7 +148,7 @@ func TestReceiveSkipsAPathThatIsNotARepo(t *testing.T) {
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
 	testutil.MkdirAll(t, filepath.Join(sb.BaseDir, "notarepo"))
 
-	if code := syncer.Receive("notarepo"); code != syncer.ExitRepoNotHere {
+	if code := syncer.Receive("notarepo", "peer.example"); code != syncer.ExitRepoNotHere {
 		t.Errorf("Receive = %d, want %d", code, syncer.ExitRepoNotHere)
 	}
 }
@@ -162,7 +162,7 @@ func TestReceiveSyncsAWorktreeWhereDotGitIsAFile(t *testing.T) {
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
 
 	// Must not be mistaken for a missing repo just because .git is a file.
-	if code := syncer.Receive("group/proj-wt"); code == syncer.ExitRepoNotHere {
+	if code := syncer.Receive("group/proj-wt", "peer.example"); code == syncer.ExitRepoNotHere {
 		t.Error("a linked worktree is a real repo")
 	}
 }
@@ -173,7 +173,7 @@ func TestReceiveSkipsDetachedHead(t *testing.T) {
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
 	sb.Git(repo, "checkout", "-q", "--detach")
 
-	if code := syncer.Receive("group/proj"); code != 0 {
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
 		t.Errorf("Receive = %d, want 0", code)
 	}
 	testutil.AssertEvent(t, activity.OpReceive, activity.StatusSkip, "detached HEAD")
@@ -185,7 +185,7 @@ func TestReceiveSkipsABranchTheRemoteDoesNotHave(t *testing.T) {
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
 	sb.Git(repo, "checkout", "-q", "-b", "orphan")
 
-	if code := syncer.Receive("group/proj"); code != 0 {
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
 		t.Errorf("Receive = %d, want 0", code)
 	}
 	testutil.AssertEvent(t, activity.OpReceive, activity.StatusSkip, "not on the remote")
@@ -201,7 +201,7 @@ func TestReceivePullsFromTheSameRemotePushUsed(t *testing.T) {
 	sb.PeerClone("group/proj")
 	sb.PeerCommit("group/proj", "from-peer")
 
-	if code := syncer.Receive("group/proj"); code != 0 {
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
 		t.Fatalf("Receive = %d, want 0", code)
 	}
 	if out := sb.Git(repo, "log", "--oneline"); !strings.Contains(out, "from-peer") {
@@ -226,7 +226,7 @@ func TestReceiveIgnoresAnUpstreamPointingElsewhere(t *testing.T) {
 	testutil.Commit(t, sb, gh, "from-peer-via-github")
 	sb.Git(gh, "push", "-q")
 
-	if code := syncer.Receive("group/proj"); code != 0 {
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
 		t.Fatalf("Receive = %d, want 0", code)
 	}
 	if out := sb.Git(repo, "log", "--oneline"); !strings.Contains(out, "from-peer-via-github") {
@@ -242,7 +242,7 @@ func TestReceiveSkipsARepoWithNoSharedRemote(t *testing.T) {
 	testutil.Commit(t, sb, local, "initial")
 	testutil.SaveConfigWithRepos(t, sb, "peer.example", "tester", []string{"local-only"})
 
-	if code := syncer.Receive("local-only"); code != 0 {
+	if code := syncer.Receive("local-only", "peer.example"); code != 0 {
 		t.Errorf("Receive = %d, want 0", code)
 	}
 	testutil.AssertEvent(t, activity.OpReceive, activity.StatusWarn, "no remote")
@@ -259,10 +259,69 @@ func TestReceiveGivesUpWhenAnotherRunHoldsTheLock(t *testing.T) {
 	defer held.Release()
 
 	t.Setenv("GITSYNC_LOCK_TIMEOUT", "200ms")
-	if code := syncer.Receive("group/proj"); code != 0 {
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
 		t.Errorf("giving up on a busy lock is not a failure: got %d", code)
 	}
 	testutil.AssertEvent(t, activity.OpReceive, activity.StatusSkip, "already in progress")
+}
+
+func TestReceiveRecordsTheNotifyingMachineInTheLock(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.PeerClone("group/proj")
+	sb.PeerCommit("group/proj", "from the peer")
+
+	// Observe the lock from inside the sync: a pre-commit hook firing at
+	// this moment is exactly what must see the owner.
+	seen := make(chan lock.Owner, 1)
+	go func() {
+		for i := 0; i < 200; i++ {
+			if o, held := lock.Held("group/proj"); held {
+				seen <- o
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		close(seen)
+	}()
+
+	if code := syncer.Receive("group/proj", "laptop.local"); code != 0 {
+		t.Fatalf("Receive = %d, want 0", code)
+	}
+	select {
+	case o, ok := <-seen:
+		if !ok {
+			t.Skip("the sync finished before the watcher sampled the lock")
+		}
+		if o.From != "laptop.local" {
+			t.Errorf("lock owner From = %q, want laptop.local", o.From)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("watcher never reported")
+	}
+	if _, held := lock.Held("group/proj"); held {
+		t.Error("the lock outlived the receive")
+	}
+	_ = repo
+}
+
+// Review Focus 2: --from arrives over ssh from another machine.
+func TestReceiveSanitisesTheFromHost(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.PeerClone("group/proj")
+
+	if code := syncer.Receive("group/proj", "evil`whoami`.local; rm -rf /"); code != 0 {
+		t.Fatalf("Receive = %d, want 0", code)
+	}
+	events, _ := activity.Read()
+	for _, e := range events {
+		if strings.ContainsAny(e.Peer+e.Msg, "`;$") {
+			t.Errorf("unsanitised host reached the log: %+v", e)
+		}
+	}
 }
 
 func TestReceiveConcurrentRunsNeverLoseADirtyTree(t *testing.T) {
@@ -277,7 +336,7 @@ func TestReceiveConcurrentRunsNeverLoseADirtyTree(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); syncer.Receive("group/proj") }()
+		go func() { defer wg.Done(); syncer.Receive("group/proj", "peer.example") }()
 	}
 	wg.Wait()
 
