@@ -131,3 +131,111 @@ func TestOnlyOneHolderAtATime(t *testing.T) {
 		t.Errorf("%d goroutines held the lock at once, want 1", max)
 	}
 }
+
+func TestHeldReportsTheOwner(t *testing.T) {
+	testutil.NewSandbox(t)
+	l, err := lock.AcquireFrom("group/proj", "laptop.local", time.Second)
+	if err != nil {
+		t.Fatalf("AcquireFrom: %v", err)
+	}
+	defer l.Release()
+
+	owner, held := lock.Held("group/proj")
+	if !held {
+		t.Fatal("Held = false while the lock is taken")
+	}
+	if owner.From != "laptop.local" {
+		t.Errorf("owner.From = %q, want laptop.local", owner.From)
+	}
+	if owner.Age() > time.Minute {
+		t.Errorf("owner.Age() = %v, want a fresh lock", owner.Age())
+	}
+}
+
+func TestHeldIsFalseWhenNoLockExists(t *testing.T) {
+	testutil.NewSandbox(t)
+	if _, held := lock.Held("group/proj"); held {
+		t.Error("Held = true with no lock")
+	}
+}
+
+func TestHeldIsFalseForAStaleLock(t *testing.T) {
+	testutil.NewSandbox(t)
+	l, err := lock.AcquireFrom("group/proj", "laptop.local", time.Second)
+	if err != nil {
+		t.Fatalf("AcquireFrom: %v", err)
+	}
+	defer l.Release()
+	old := time.Now().Add(-2 * lock.StaleAfter)
+	if err := os.Chtimes(l.Dir(), old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if _, held := lock.Held("group/proj"); held {
+		t.Error("a stale lock must not block anything")
+	}
+}
+
+func TestRefreshKeepsALockAlive(t *testing.T) {
+	testutil.NewSandbox(t)
+	l, err := lock.AcquireFrom("group/proj", "laptop.local", time.Second)
+	if err != nil {
+		t.Fatalf("AcquireFrom: %v", err)
+	}
+	defer l.Release()
+	old := time.Now().Add(-2 * lock.StaleAfter)
+	_ = os.Chtimes(l.Dir(), old, old)
+	if err := l.Refresh(); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if _, held := lock.Held("group/proj"); !held {
+		t.Error("a refreshed lock must still be held")
+	}
+}
+
+// A process killed between mkdir and the owner write leaves a lock with no
+// readable owner. It still blocks - something is in there - but it must not
+// panic, and the stale timer must still apply.
+func TestHeldSurvivesAMissingOrTruncatedOwnerFile(t *testing.T) {
+	testutil.NewSandbox(t)
+	l, err := lock.AcquireFrom("group/proj", "laptop.local", time.Second)
+	if err != nil {
+		t.Fatalf("AcquireFrom: %v", err)
+	}
+	defer l.Release()
+	if err := os.WriteFile(filepath.Join(l.Dir(), "owner"), []byte("{\"from\":"), 0o644); err != nil {
+		t.Fatalf("truncate owner: %v", err)
+	}
+	owner, held := lock.Held("group/proj")
+	if !held {
+		t.Fatal("a lock with an unreadable owner is still a lock")
+	}
+	if owner.From != "" {
+		t.Errorf("owner.From = %q, want empty for an unreadable record", owner.From)
+	}
+
+	old := time.Now().Add(-2 * lock.StaleAfter)
+	_ = os.Chtimes(l.Dir(), old, old)
+	if _, held := lock.Held("group/proj"); held {
+		t.Error("an unreadable owner must not make a lock un-expirable")
+	}
+}
+
+func TestBreakRemovesTheLockAndReportsWhoHadIt(t *testing.T) {
+	testutil.NewSandbox(t)
+	l, err := lock.AcquireFrom("group/proj", "laptop.local", time.Second)
+	if err != nil {
+		t.Fatalf("AcquireFrom: %v", err)
+	}
+	_ = l
+
+	owner, had, err := lock.Break("group/proj")
+	if err != nil {
+		t.Fatalf("Break: %v", err)
+	}
+	if !had || owner.From != "laptop.local" {
+		t.Fatalf("Break = (%+v, %v), want the previous owner", owner, had)
+	}
+	if _, held := lock.Held("group/proj"); held {
+		t.Error("Break left the lock in place")
+	}
+}
