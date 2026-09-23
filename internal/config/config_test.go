@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/testutil"
 )
@@ -27,6 +28,7 @@ func TestHomeHonoursEnvOverride(t *testing.T) {
 
 func TestSaveThenLoadRoundTrips(t *testing.T) {
 	sb := testutil.NewSandbox(t)
+	// Save with old form, which Marshal() will convert to new form
 	want := config.Config{BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester"}
 	if err := want.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -36,9 +38,13 @@ func TestSaveThenLoadRoundTrips(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	// Compare field by field: Config now holds a slice, so it is not
-	// comparable with ==.
-	if got.BaseDir != want.BaseDir || got.PeerHost != want.PeerHost || got.PeerUser != want.PeerUser {
-		t.Errorf("Load() = %+v, want %+v", got, want)
+	// comparable with ==. Marshal converts old form to new form, so we
+	// expect Peers to be populated and old fields to be empty.
+	if got.BaseDir != want.BaseDir {
+		t.Errorf("Load() BaseDir = %q, want %q", got.BaseDir, want.BaseDir)
+	}
+	if len(got.Peers) != 1 || got.Peers[0].Host != "peer.example" || got.Peers[0].User != "tester" {
+		t.Errorf("Load() Peers = %v, want one peer tester@peer.example", got.Peers)
 	}
 }
 
@@ -53,10 +59,15 @@ func TestSaveWritesReadableToml(t *testing.T) {
 		t.Fatal(err)
 	}
 	// It is hand-editable; keep the keys snake_case and obvious.
-	for _, want := range []string{"base_dir", "peer_host", "peer_user"} {
+	// Old peer_host/peer_user form is never written; only the new peers format.
+	for _, want := range []string{"base_dir"} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("config.toml missing key %q:\n%s", want, b)
 		}
+	}
+	// Should have peers section with host and user keys
+	if !strings.Contains(string(b), "[[peers]]") && !strings.Contains(string(b), "host") {
+		t.Errorf("config.toml should have peers section:\n%s", b)
 	}
 }
 
@@ -187,5 +198,80 @@ func TestRepoPathRejectsEscapingRelpaths(t *testing.T) {
 		if err := c.ValidateRel(in); err == nil {
 			t.Errorf("ValidateRel(%q) = nil, want an error", in)
 		}
+	}
+}
+
+func TestLoadMigratesTheOldSinglePeerForm(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	writeConfig(t, sb, `base_dir = "`+sb.BaseDir+`"
+peer_host = "old.local"
+peer_user = "tester"
+repos = ["a"]
+`)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	peers := cfg.PeerList()
+	if len(peers) != 1 || peers[0].Host != "old.local" || peers[0].User != "tester" {
+		t.Fatalf("PeerList() = %+v, want one peer tester@old.local", peers)
+	}
+}
+
+func TestPeerListDropsDuplicatesAndSelf(t *testing.T) {
+	self, _ := os.Hostname()
+	cfg := config.Config{Peers: []config.Peer{
+		{Host: "b.local", User: "t"},
+		{Host: "b.local", User: "t"},
+		{Host: self, User: "t"},
+	}}
+	peers := cfg.PeerList()
+	if len(peers) != 1 || peers[0].Host != "b.local" {
+		t.Fatalf("PeerList() = %+v, want only b.local", peers)
+	}
+}
+
+func TestPeerValidateRejectsShellMetacharacters(t *testing.T) {
+	for _, p := range []config.Peer{
+		{Host: "a.local'; rm -rf ~", User: "t"},
+		{Host: "a.local", User: "t;evil"},
+		{Host: "a.local", User: "t", BaseDir: "/home/t'/x"},
+		{Host: "", User: "t"},
+	} {
+		if err := p.Validate(); err == nil {
+			t.Errorf("Validate(%+v) = nil, want an error", p)
+		}
+	}
+	if err := (config.Peer{Host: "a.local", User: "t", BaseDir: "/home/t/code"}).Validate(); err != nil {
+		t.Errorf("Validate on a plain peer: %v", err)
+	}
+}
+
+func TestMarshalRoundTripsSeveralPeers(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	cfg := config.Config{BaseDir: sb.BaseDir, Repos: []string{"a"}, Peers: []config.Peer{
+		{Host: "b.local", User: "t", BaseDir: "/home/t/code"},
+		{Host: "c.local", User: "t", BaseDir: "/Users/t/code"},
+	}}
+	b, err := cfg.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(b), "peer_host") {
+		t.Errorf("Marshal still writes the old peer_host key:\n%s", b)
+	}
+	var got config.Config
+	if _, err := toml.Decode(string(b), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Peers) != 2 || got.Peers[1].Host != "c.local" {
+		t.Fatalf("round-trip lost peers: %+v", got.Peers)
+	}
+}
+
+func writeConfig(t *testing.T, sb *testutil.Sandbox, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(sb.GitsyncHome, "config.toml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
 }

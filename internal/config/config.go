@@ -15,21 +15,55 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// Peer is one other machine in the mesh, as reachable from this one.
+type Peer struct {
+	Host    string `toml:"host"`
+	User    string `toml:"user"`
+	BaseDir string `toml:"base_dir,omitempty"`
+}
+
+func (p Peer) Target() string { return p.User + "@" + p.Host }
+
+// shellUnsafe are characters that would break out of the single-quoted
+// remote command strings provision, repocheck and initialsync build. A peer
+// is named in those strings, so it is validated once here rather than at
+// every interpolation site.
+const shellUnsafe = "'\"`$;&|<>()\\ \t\n*?[]{}!#~"
+
+func (p Peer) Validate() error {
+	if p.Host == "" || p.User == "" {
+		return fmt.Errorf("peer needs both host and user (got %q@%q)", p.User, p.Host)
+	}
+	for _, f := range []struct{ name, val string }{
+		{"host", p.Host}, {"user", p.User},
+	} {
+		if strings.ContainsAny(f.val, shellUnsafe) {
+			return fmt.Errorf("peer %s %q contains characters git-sync will not put in a remote command", f.name, f.val)
+		}
+	}
+	if strings.ContainsAny(p.BaseDir, "'\"`$;&|<>()\\\n*?") {
+		return fmt.Errorf("peer base_dir %q contains characters git-sync will not put in a remote command", p.BaseDir)
+	}
+	return nil
+}
+
 // Config is ~/.gitsync/config.toml. It is hand-editable by design.
 type Config struct {
 	// BaseDir is the sync root. Only repos under it sync, and a repo's
 	// identity across machines is its path relative to BaseDir.
 	BaseDir string `toml:"base_dir"`
-	// PeerHost is the other machine, as reachable from this one over ssh.
-	PeerHost string `toml:"peer_host"`
-	// PeerUser is the account to ssh in as on the peer.
-	PeerUser string `toml:"peer_user"`
+	// PeerHost and PeerUser are the pre-mesh single-peer form. Read for
+	// migration, never written: Marshal emits [[peers]] only.
+	PeerHost string `toml:"peer_host,omitempty"`
+	PeerUser string `toml:"peer_user,omitempty"`
 	// Repos is the allowlist: paths relative to BaseDir, chosen through the
 	// install picker. Nothing outside it is ever pushed or received.
 	Repos []string `toml:"repos"`
 	// RemoteNames is the preference order for the shared remote that actually
 	// carries the commits between the machines. Empty means DefaultRemoteNames.
 	RemoteNames []string `toml:"remote_names"`
+	// Peers is every other machine in the mesh.
+	Peers []Peer `toml:"peers,omitempty"`
 }
 
 // DefaultRemoteNames is the preference order when config.toml says nothing:
@@ -103,6 +137,8 @@ func (c Config) Marshal() ([]byte, error) {
 	// Write the effective preference order, not an empty list: the file is
 	// meant to be read and edited, and a silent default is invisible there.
 	c.RemoteNames = c.Remotes()
+	c.Peers = c.PeerList()
+	c.PeerHost, c.PeerUser = "", ""
 	var buf bytes.Buffer
 	if _, err := buf.WriteString("# git-sync configuration. Edit freely.\n"); err != nil {
 		return nil, err
@@ -146,6 +182,46 @@ func (c Config) IsSelected(rel string) bool {
 		}
 	}
 	return false
+}
+
+// PeerList is the effective set of other machines: the old single-peer form
+// migrated in, this machine dropped if it names itself, duplicates removed,
+// and invalid entries discarded. Every caller that sshes anywhere uses this.
+func (c Config) PeerList() []Peer {
+	peers := c.Peers
+	if len(peers) == 0 && c.PeerHost != "" {
+		peers = []Peer{{Host: c.PeerHost, User: c.PeerUser}}
+	}
+	self, _ := os.Hostname()
+	seen := map[string]bool{}
+	out := make([]Peer, 0, len(peers))
+	for _, p := range peers {
+		if p.Validate() != nil {
+			continue
+		}
+		if strings.EqualFold(p.Host, self) {
+			continue // a machine never notifies itself
+		}
+		if seen[strings.ToLower(p.Target())] {
+			continue
+		}
+		seen[strings.ToLower(p.Target())] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+// WithoutPeer returns a copy with host removed - what each peer's mirrored
+// config needs, since a machine never lists itself.
+func (c Config) WithoutPeer(host string) Config {
+	out := c
+	out.Peers = nil
+	for _, p := range c.PeerList() {
+		if !strings.EqualFold(p.Host, host) {
+			out.Peers = append(out.Peers, p)
+		}
+	}
+	return out
 }
 
 // ValidateRel rejects a relative path that would escape BaseDir. The relpath
