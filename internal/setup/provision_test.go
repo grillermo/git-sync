@@ -65,31 +65,49 @@ func TestProvisionCopiesBinaryConfigAndHook(t *testing.T) {
 	}
 }
 
-func TestProvisionWritesAMirroredConfig(t *testing.T) {
-	// The peer's config must point back at this machine and carry the same
-	// allowlist, or the pair syncs in one direction only.
+func TestProvisionWritesAMeshConfigExcludingThePeerItself(t *testing.T) {
 	sb := testutil.NewSandbox(t)
-	sb.StubSSHScripted(map[string]string{"uname": localUname(), "$HOME": "/home/peer"}, 0)
-	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
+	sb.StubSSHScripted(map[string]string{"uname": localUname(), "$HOME": "/home/tester"}, 0)
 
-	_ = setup.ProvisionPeer(setup.PeerOptions{
-		Cfg: config.Config{
-			BaseDir: "/Users/me/code", PeerHost: "peer.example", PeerUser: "tester",
-			Repos: []string{"notes", "work/api"},
-		},
-		Self: self, SelfHost: "this-machine", SelfUser: "me", Out: io.Discard,
+	cfg := config.Config{BaseDir: sb.BaseDir, Repos: []string{"a"}, Peers: []config.Peer{
+		{Host: "b.local", User: "t"},
+		{Host: "c.local", User: "t"},
+	}}
+	err := setup.ProvisionPeer(setup.PeerOptions{
+		Cfg: cfg, Peer: config.Peer{Host: "b.local", User: "t"},
+		Self:     testutil.WriteScript(t, sb, "fake", "#!/bin/sh\n"),
+		SelfHost: "a.local", SelfUser: "t", Out: io.Discard,
 	})
-
+	if err != nil {
+		t.Fatalf("ProvisionPeer: %v", err)
+	}
 	written := sb.SSHStdin(t, "config.toml")
-	for _, want := range []string{
-		`peer_host = "this-machine"`,
-		`peer_user = "me"`,
-		`"notes"`,
-		`"work/api"`,
-		`base_dir = "/home/peer/code"`, // same path relative to $HOME
-	} {
+	if strings.Contains(written, `host = "b.local"`) {
+		t.Errorf("b.local's own config lists itself:\n%s", written)
+	}
+	for _, want := range []string{`host = "c.local"`, `host = "a.local"`} {
 		if !strings.Contains(written, want) {
-			t.Errorf("peer config missing %q:\n%s", want, written)
+			t.Errorf("b.local's config is missing %s:\n%s", want, written)
+		}
+	}
+}
+
+func TestProvisionWritesAllThreeHookShims(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.StubSSHScripted(map[string]string{"uname": localUname(), "$HOME": "/home/tester"}, 0)
+	cfg := config.Config{BaseDir: sb.BaseDir, Repos: []string{"a"},
+		Peers: []config.Peer{{Host: "b.local", User: "t"}}}
+	if err := setup.ProvisionPeer(setup.PeerOptions{
+		Cfg: cfg, Peer: cfg.Peers[0],
+		Self:     testutil.WriteScript(t, sb, "fake", "#!/bin/sh\n"),
+		SelfHost: "a.local", SelfUser: "t", Out: io.Discard,
+	}); err != nil {
+		t.Fatalf("ProvisionPeer: %v", err)
+	}
+	calls := sb.SSHCalls()
+	for _, name := range []string{"hooks/post-commit", "hooks/pre-commit", "hooks/pre-push"} {
+		if !strings.Contains(calls, name) {
+			t.Errorf("%s was never written on the peer; calls:\n%s", name, calls)
 		}
 	}
 }

@@ -134,10 +134,20 @@ func (c Config) Save() error {
 // streaming the mirrored config to a peer over ssh, so the two can never
 // drift apart.
 func (c Config) Marshal() ([]byte, error) {
+	self, _ := os.Hostname()
+	return c.MarshalFor(self)
+}
+
+// MarshalFor produces the config bytes for the machine named host: the same
+// as Marshal, except self-filtering uses that machine's name rather than
+// this one's. Provisioning uses this to stream a peer its own config.toml,
+// since Marshal would filter using THIS machine's hostname and could drop or
+// keep the wrong entries.
+func (c Config) MarshalFor(host string) ([]byte, error) {
 	// Write the effective preference order, not an empty list: the file is
 	// meant to be read and edited, and a silent default is invisible there.
 	c.RemoteNames = c.Remotes()
-	c.Peers = c.PeerList()
+	c.Peers = c.peerListFor(host)
 	c.PeerHost, c.PeerUser = "", ""
 	var buf bytes.Buffer
 	if _, err := buf.WriteString("# git-sync configuration. Edit freely.\n"); err != nil {
@@ -188,11 +198,19 @@ func (c Config) IsSelected(rel string) bool {
 // migrated in, this machine dropped if it names itself, duplicates removed,
 // and invalid entries discarded. Every caller that sshes anywhere uses this.
 func (c Config) PeerList() []Peer {
+	self, _ := os.Hostname()
+	return c.peerListFor(self)
+}
+
+// peerListFor is PeerList's logic parameterized on which host counts as
+// "self". PeerList passes this machine's own hostname; MarshalFor passes the
+// receiving peer's, since a machine's config must never list itself but
+// should list everyone else, including us.
+func (c Config) peerListFor(self string) []Peer {
 	peers := c.Peers
 	if len(peers) == 0 && c.PeerHost != "" {
 		peers = []Peer{{Host: c.PeerHost, User: c.PeerUser}}
 	}
-	self, _ := os.Hostname()
 	seen := map[string]bool{}
 	out := make([]Peer, 0, len(peers))
 	for _, p := range peers {

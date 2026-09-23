@@ -17,6 +17,7 @@ import (
 // PeerOptions describes the peer half of an install.
 type PeerOptions struct {
 	Cfg         config.Config // this machine's config; Repos is copied verbatim
+	Peer        config.Peer   // the machine being provisioned
 	Self        string        // path to the binary to send
 	SelfHost    string        // this machine's hostname, as the peer sees it
 	SelfUser    string        // the account the peer should ssh back into
@@ -36,7 +37,7 @@ func ProvisionPeer(o PeerOptions) error {
 	if o.Out == nil {
 		o.Out = io.Discard
 	}
-	target := Target(o.Cfg)
+	target := o.Peer.Target()
 
 	// 1-2. The binary is copied verbatim, so a mismatched peer could never run
 	//      it; and every path we write must be absolute, which needs the peer's
@@ -71,15 +72,18 @@ func ProvisionPeer(o PeerOptions) error {
 		return fmt.Errorf("copying the binary to %s: %w", target, err)
 	}
 
-	// 5. The mirrored config: same repos, the peer's own base_dir, pointing
-	//    back at us.
-	peerCfg := config.Config{
-		BaseDir:  o.peerBase(peerHome),
-		PeerHost: o.SelfHost,
-		PeerUser: o.SelfUser,
-		Repos:    o.Cfg.Repos,
-	}
-	toml, err := peerCfg.Marshal()
+	// 5. The peer's config: the same repos, its own base_dir, and the rest of
+	//    the mesh - every machine except itself, plus us.
+	peerCfg := o.Cfg.WithoutPeer(o.Peer.Host)
+	peerCfg.BaseDir = o.peerBase(peerHome)
+	peerCfg.Repos = o.Cfg.Repos
+	peerCfg.Peers = append(peerCfg.Peers, config.Peer{
+		Host: o.SelfHost, User: o.SelfUser, BaseDir: o.Cfg.BaseDir,
+	})
+	// MarshalFor, not Marshal: Marshal would self-filter using THIS
+	// machine's hostname, not the peer's, and could drop or keep the wrong
+	// entries in the file we are about to stream to it.
+	toml, err := peerCfg.MarshalFor(o.Peer.Host)
 	if err != nil {
 		return err
 	}
@@ -90,15 +94,17 @@ func ProvisionPeer(o PeerOptions) error {
 		return err
 	}
 
-	// 6. The hook shim, written then renamed for the same reason as the binary:
-	//    a commit landing on the peer mid-transfer must never exec a half-written
-	//    shim.
-	shim := hookShim(peerGitsync+"/bin/git-sync", "post-commit")
-	hookCmd := fmt.Sprintf(
-		"cat > %s/hooks/post-commit.tmp && chmod +x %s/hooks/post-commit.tmp && mv %s/hooks/post-commit.tmp %s/hooks/post-commit",
-		peerGitsync, peerGitsync, peerGitsync, peerGitsync)
-	if err := sshIn(target, hookCmd, strings.NewReader(shim)); err != nil {
-		return err
+	// 6. The hook shims, written then renamed for the same reason as the
+	//    binary: a commit landing on the peer mid-transfer must never exec a
+	//    half-written shim.
+	for _, name := range HookNames {
+		shim := hookShim(peerGitsync+"/bin/git-sync", name)
+		hookCmd := fmt.Sprintf(
+			"cat > %s/hooks/%s.tmp && chmod +x %s/hooks/%s.tmp && mv %s/hooks/%s.tmp %s/hooks/%s",
+			peerGitsync, name, peerGitsync, name, peerGitsync, name, peerGitsync, name)
+		if err := sshIn(target, hookCmd, strings.NewReader(shim)); err != nil {
+			return err
+		}
 	}
 
 	// 7. Point the peer's git at it.
@@ -107,7 +113,7 @@ func ProvisionPeer(o PeerOptions) error {
 	}
 
 	fmt.Fprintf(o.Out, "provisioned %s: %d repos, base_dir %s\n",
-		o.Cfg.PeerHost, len(o.Cfg.Repos), peerCfg.BaseDir)
+		o.Peer.Host, len(o.Cfg.Repos), peerCfg.BaseDir)
 	fmt.Fprintf(o.Out, "  the peer will reach back at %s@%s\n", o.SelfUser, o.SelfHost)
 
 	return nil

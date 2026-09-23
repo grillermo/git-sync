@@ -127,7 +127,9 @@ func Install(o Options) error {
 	}
 
 	err = ProvisionPeer(PeerOptions{
-		Cfg: cfg, Self: config.BinPath(), SelfHost: selfHost, SelfUser: selfUser,
+		Cfg:  cfg,
+		Peer: config.Peer{Host: o.PeerHost, User: o.PeerUser},
+		Self: config.BinPath(), SelfHost: selfHost, SelfUser: selfUser,
 		PeerBaseDir: o.PeerBaseDir, Out: o.Out,
 	})
 	switch {

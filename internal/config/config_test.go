@@ -269,6 +269,23 @@ func TestMarshalRoundTripsSeveralPeers(t *testing.T) {
 	}
 }
 
+func TestMarshalForKeepsThisMachineInAPeersConfig(t *testing.T) {
+	self, _ := os.Hostname()
+	cfg := config.Config{BaseDir: "/x", Peers: []config.Peer{
+		{Host: self, User: "t"}, {Host: "b.local", User: "t"},
+	}}
+	b, err := cfg.MarshalFor("b.local")
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
+	}
+	if !strings.Contains(string(b), self) {
+		t.Errorf("b.local's config must list %s:\n%s", self, b)
+	}
+	if strings.Contains(string(b), `host = "b.local"`) {
+		t.Errorf("b.local's config must not list itself:\n%s", b)
+	}
+}
+
 func writeConfig(t *testing.T, sb *testutil.Sandbox, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(sb.GitsyncHome, "config.toml"), []byte(body), 0o644); err != nil {
