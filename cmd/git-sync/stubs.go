@@ -17,6 +17,7 @@ import (
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/gitcmd"
+	"github.com/grillermo/git-sync/internal/lock"
 	"github.com/grillermo/git-sync/internal/picker"
 	"github.com/grillermo/git-sync/internal/report"
 	"github.com/grillermo/git-sync/internal/scan"
@@ -353,24 +354,92 @@ func cmdReport(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdHook(args []string, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "post-commit" {
-		fmt.Fprintln(stderr, "usage: git-sync hook post-commit")
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: git-sync hook <post-commit|pre-commit|pre-push>")
 		return 2
 	}
 	wd, err := os.Getwd()
 	if err != nil {
+		return 0 // never block a commit over our own failure
+	}
+	switch args[0] {
+	case "pre-commit", "pre-push":
+		return syncer.Block(wd, stderr)
+	case "post-commit":
+		self, err := os.Executable()
+		if err != nil {
+			self = config.BinPath()
+		}
+		if err := syncer.Hook(wd, func(rel string) error {
+			return syncer.SpawnDetached(self, rel)
+		}); err != nil {
+			// Never fail the commit over a sync problem.
+			activity.AppendDebug("hook: " + err.Error())
+		}
+		return 0
+	default:
+		fmt.Fprintln(stderr, "usage: git-sync hook <post-commit|pre-commit|pre-push>")
+		return 2
+	}
+}
+
+// cmdUnlock clears a receiver lock left behind by a receive that died.
+func cmdUnlock(args []string, stdout, stderr io.Writer) int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(stderr, "unlock:", err)
 		return 1
 	}
-	self, err := os.Executable()
+	rel := ""
+	if len(args) > 0 {
+		rel = args[0]
+	} else {
+		wd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(stderr, "unlock:", err)
+			return 1
+		}
+		root, err := gitcmd.Toplevel(wd)
+		if err != nil {
+			fmt.Fprintln(stderr, "unlock: not inside a git repo; name one: git-sync unlock <repo>")
+			return 2
+		}
+		// git resolves symlinks in --show-toplevel (e.g. macOS's /var ->
+		// /private/var), but base_dir as configured is not resolved.
+		// Resolve here too, or a repo under a symlinked ancestor looks
+		// "outside base_dir". Mirrors syncer's repoRel.
+		rc := cfg
+		if resolved, err := filepath.EvalSymlinks(rc.BaseDir); err == nil {
+			rc.BaseDir = resolved
+		}
+		if rel, err = rc.RepoRel(root); err != nil {
+			fmt.Fprintln(stderr, "unlock:", err)
+			return 2
+		}
+	}
+	if err := cfg.ValidateRel(rel); err != nil {
+		fmt.Fprintln(stderr, "unlock:", err)
+		return 2
+	}
+	owner, had, err := lock.Break(rel)
 	if err != nil {
-		self = config.BinPath()
+		fmt.Fprintln(stderr, "unlock:", err)
+		return 1
 	}
-	if err := syncer.Hook(wd, func(rel string) error {
-		return syncer.SpawnDetached(self, rel)
-	}); err != nil {
-		// Never fail the commit over a sync problem.
-		activity.AppendDebug("hook: " + err.Error())
+	if !had {
+		fmt.Fprintf(stdout, "%s is not locked\n", rel)
+		return 0
 	}
+	from := owner.From
+	if from == "" {
+		from = "an unknown machine"
+	}
+	fmt.Fprintf(stdout, "cleared the lock on %s (held by %s since %s)\n",
+		rel, from, owner.Started.Format(time.RFC3339))
+	_ = activity.Append(activity.Event{
+		Repo: rel, Op: activity.OpReceive, Status: activity.StatusWarn,
+		Peer: owner.From, Msg: "lock cleared by hand",
+	})
 	return 0
 }
 
