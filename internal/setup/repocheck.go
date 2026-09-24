@@ -121,6 +121,26 @@ func CheckPeerReposWithRemotes(target, peerBase string, repos []RepoWant, remote
 	return checks, nil
 }
 
+// CheckPeers asks every machine the same question, one round trip each. A
+// repo that only exists on some machines is normal; what matters is that the
+// user is told which machine is missing what, per machine.
+func CheckPeers(peers []PeerTarget, repos []RepoWant, remotePrefs []string) map[string][]RepoCheck {
+	out := make(map[string][]RepoCheck, len(peers))
+	for _, pt := range peers {
+		checks, err := CheckPeerReposWithRemotes(pt.Peer.Target(), pt.BaseDir, repos, remotePrefs)
+		if err != nil {
+			// An unreachable machine still gets a row per repo, marked
+			// unchecked, so it renders as "we do not know" rather than
+			// vanishing from the report.
+			for i := range checks {
+				checks[i].State = RepoUnchecked
+			}
+		}
+		out[pt.Peer.Host] = checks
+	}
+	return out
+}
+
 // sameRemote compares two remote URLs the way a person would: a trailing
 // `.git` or `/` is punctuation, not a different repository. Anything subtler
 // (ssh vs https for the same host and path) is left alone - reporting a

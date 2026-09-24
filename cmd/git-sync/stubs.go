@@ -155,12 +155,9 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	if !*noPeer {
 		remotes := cfgRemotes()
 		wants := repoWants(config.Config{BaseDir: base, RemoteNames: remotes}, repos)
-		for _, p := range reachable {
-			fmt.Fprintf(stdout, "checking those repos on %s\n", p.Host)
-			if !checkPeer(p, config.Config{BaseDir: base, RemoteNames: remotes}, wants, stdout, stderr) {
-				fmt.Fprintln(stdout, "cancelled; nothing was installed and the peers were not touched")
-				return 0
-			}
+		if !checkPeer(reachable, config.Config{BaseDir: base, RemoteNames: remotes}, wants, stdout, stderr) {
+			fmt.Fprintln(stdout, "cancelled; nothing was installed and the peers were not touched")
+			return 0
 		}
 	}
 
@@ -317,28 +314,36 @@ func repoWants(cfg config.Config, repos []string) []setup.RepoWant {
 	return out
 }
 
-// checkPeer asks one peer which selected repos it has, prints the mismatches
-// and returns whether to go ahead. The user can quit here with q, just as in
-// the picker: nothing has been written yet, on any machine. Called once per
-// reachable peer, so a mismatch on one machine never hides one on another.
-func checkPeer(peer config.Peer, cfg config.Config, repos []setup.RepoWant, stdout, stderr io.Writer) bool {
-	target := peer.Target()
-	probe, err := setup.Probe(target)
-	if err != nil {
-		// Install already survives an unreachable peer; do not turn a warning
-		// into a dead end here.
-		fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", peer.Host, err)
+// checkPeer asks every reachable peer which selected repos it has, prints
+// the mismatches per machine, and returns whether to go ahead. The user can
+// quit here with q, just as in the picker: nothing has been written yet, on
+// any machine. Called once for the whole mesh so that a mismatch on one
+// machine is reported alongside the others rather than behind its own
+// separate confirm prompt.
+func checkPeer(peers []config.Peer, cfg config.Config, repos []setup.RepoWant, stdout, stderr io.Writer) bool {
+	var targets []setup.PeerTarget
+	for _, p := range peers {
+		fmt.Fprintf(stdout, "checking those repos on %s\n", p.Host)
+		probe, err := setup.Probe(p.Target())
+		if err != nil {
+			// Install already survives an unreachable peer; do not turn a
+			// warning into a dead end here.
+			fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", p.Host, err)
+			continue
+		}
+		peerBase := setup.PeerBase(cfg.BaseDir, probe.Home, p.BaseDir)
+		targets = append(targets, setup.PeerTarget{Peer: p, BaseDir: peerBase})
+	}
+	if len(targets) == 0 {
 		return true
 	}
 
-	peerBase := setup.PeerBase(cfg.BaseDir, probe.Home, peer.BaseDir)
-	checks, err := setup.CheckPeerReposWithRemotes(target, peerBase, repos, cfg.Remotes())
-	if err != nil {
-		fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", peer.Host, err)
-		return true
+	results := setup.CheckPeers(targets, repos, cfg.Remotes())
+	total := 0
+	for _, pt := range targets {
+		total += setup.RenderRepoChecks(stdout, pt.Peer.Host, pt.BaseDir, results[pt.Peer.Host])
 	}
-	n := setup.RenderRepoChecks(stdout, peer.Host, peerBase, checks)
-	if n == 0 {
+	if total == 0 {
 		return true
 	}
 	// Nothing to decide without a terminal: report and carry on, since the
