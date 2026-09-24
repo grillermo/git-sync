@@ -2,6 +2,7 @@ package setup
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -10,16 +11,17 @@ import (
 	"github.com/grillermo/git-sync/internal/gitcmd"
 )
 
-// Initial synchronisation: get both machines level with the shared remote
-// *before* the hook is armed, so the first commit after install is an ordinary
-// fast-forward on the other side.
+// Initial synchronisation: get every machine in the mesh level with the
+// shared remote *before* the hook is armed, so the first commit after
+// install is an ordinary fast-forward everywhere else.
 //
-// Without this step, a repo that was already out of step at install time stays
-// broken silently. The failure looks exactly like the one this package exists
-// to prevent: the pusher reports "pushed" and "peer synced", while the peer's
-// receive refuses the fast-forward and warns into a log nobody is watching. A
-// machine holding one unpushed commit from last week is enough to cause it,
-// and it never resolves on its own, because receive never pushes.
+// Without this step, a repo that was already out of step at install time
+// stays broken silently. The failure looks exactly like the one this
+// package exists to prevent: the pusher reports "pushed" and "peer synced",
+// while the peer's receive refuses the fast-forward and warns into a log
+// nobody is watching. A machine holding one unpushed commit from last week
+// is enough to cause it, and it never resolves on its own, because receive
+// never pushes.
 //
 // The repair uses only the two operations the steady state already relies on -
 // push, and merge --ff-only - so it can add nothing to history that a normal
@@ -44,32 +46,76 @@ func (p SyncPos) canPush() bool   { return p.ok() && p.Ahead > 0 && p.Behind == 
 func (p SyncPos) canFF() bool     { return p.ok() && p.Behind > 0 && p.Ahead == 0 }
 func (p SyncPos) converged() bool { return p.ok() && p.Ahead == 0 && p.Behind == 0 }
 
-// RepoSync is one selected repo measured on both machines.
+// PeerTarget is one machine to measure, with its own sync root. BaseDir is
+// that peer's base_dir as seen on the peer itself (the answer PeerBase or a
+// config's own base_dir gives), never this machine's.
+type PeerTarget struct {
+	Peer    config.Peer
+	BaseDir string
+}
+
+// PeerPos is one peer machine's position for one repo.
+type PeerPos struct {
+	Peer config.Peer
+	Pos  SyncPos
+}
+
+// RepoSync is one selected repo measured on every machine.
 type RepoSync struct {
 	Rel   string
 	Here  SyncPos
-	There SyncPos
+	There []PeerPos
 }
 
 // needsWork reports whether this repo is anything other than fully healthy -
 // either it can be repaired, or it needs the user. Blocked counts even when
-// both sides are individually converged: two machines sitting level on
+// every machine is individually converged: two machines sitting level on
 // *different branches* each look fine alone, and the pair still never syncs.
 func (r RepoSync) needsWork() bool {
-	return r.blocked() || !r.Here.converged() || !r.There.converged()
+	if r.blocked() || !r.Here.converged() {
+		return true
+	}
+	for _, p := range r.There {
+		if !p.Pos.converged() {
+			return true
+		}
+	}
+	return false
 }
 
 // blocked reports whether push and fast-forward cannot fix this repo, so the
-// user has to. A branch mismatch counts: the two machines are not meeting on
-// the same branch, and nothing we are willing to do changes that.
+// user has to. Two machines ahead is not blocked: the first pushes, and the
+// others are reported afterwards by the re-measure.
 func (r RepoSync) blocked() bool {
-	if !r.Here.ok() || !r.There.ok() {
+	if !r.Here.ok() {
 		return true
 	}
-	if r.Here.diverged() || r.There.diverged() {
-		return true
+	for _, p := range r.There {
+		if !p.Pos.ok() || p.Pos.Branch != r.Here.Branch {
+			return true
+		}
 	}
-	return r.Here.Branch != r.There.Branch
+	return false
+}
+
+// publisher identifies which machine ApplySync would push from for r,
+// mirroring its own selection order: this machine first, then the first peer
+// - in peer-list order - that is purely ahead. It exists only to describe the
+// plan; ApplySync makes the real choice independently and this must always
+// agree with it.
+func (r RepoSync) publisher() (here bool, peerHost string, ok bool) {
+	if r.blocked() {
+		return false, "", false
+	}
+	if r.Here.canPush() {
+		return true, "", true
+	}
+	for _, p := range r.There {
+		if p.Pos.canPush() {
+			return false, p.Peer.Host, true
+		}
+	}
+	return false, "", false
 }
 
 // initialSyncMarker opens the remote scripts, so they are identifiable in the
@@ -77,54 +123,90 @@ func (r RepoSync) blocked() bool {
 const initialSyncMarker = "# git-sync-initial-sync"
 
 // MeasureSync reports, for each repo, how far each machine is from the shared
-// remote. It fetches on both sides first: the question is about the remote as
-// it is now, not as it was at the last fetch.
+// remote. It fetches here and on every peer first: the question is about the
+// remote as it is now, not as it was at the last fetch.
 //
-// Measuring is read-only, so it is safe to run before asking the user anything.
-// PlanSync turns the result into a description, ApplySync acts on it.
-func MeasureSync(target, peerBase string, cfg config.Config, repos []string) ([]RepoSync, error) {
+// Measuring is read-only, so it is safe to run before asking the user
+// anything. RenderSyncPlan turns the result into a description, ApplySync
+// acts on it.
+//
+// Peers are asked sequentially - this is install, not the hot path - and one
+// peer failing to answer never stops the others from being measured: the
+// returned slice always has one row per repo with one PeerPos per peer,
+// whatever the error. The returned error, when non-nil, wraps
+// errPeerUnreachable for every peer that could not be reached at all, purely
+// so a caller can tell the user; ApplySync's own re-measure deliberately
+// ignores it and trusts the per-repo/per-peer data instead.
+func MeasureSync(cfg config.Config, peers []PeerTarget, repos []string) ([]RepoSync, error) {
 	out := make([]RepoSync, 0, len(repos))
 	askable := make([]string, 0, len(repos))
+	badRel := map[string]bool{}
 	for _, rel := range repos {
 		rs := RepoSync{Rel: rel, Here: measureHere(cfg, rel)}
 		if strings.Contains(rel, "'") {
 			// Cannot be named safely in the remote shell command, and a repo we
 			// cannot ask about must not be reported as fine.
-			rs.There = SyncPos{Err: "unsupported character (') in the repo path"}
+			badRel[rel] = true
 		} else {
 			askable = append(askable, rel)
 		}
 		out = append(out, rs)
 	}
 
-	if len(askable) == 0 || strings.Contains(peerBase, "'") {
-		return out, nil
-	}
 	for _, name := range cfg.Remotes() {
 		if strings.Contains(name, "'") {
 			return out, fmt.Errorf("remote name %q is not usable over ssh", name)
 		}
 	}
 
-	text, err := sshOut(target, syncMeasureScript(peerBase, askable, cfg.Remotes()))
-	if err != nil {
-		return out, fmt.Errorf("%w: %s: %v", errPeerUnreachable, target, err)
-	}
-	byRel := parseSyncPositions(text)
-	for i := range out {
-		if out[i].There.Err != "" {
-			continue // already excluded above
+	var errs []error
+	for _, pt := range peers {
+		positions := map[string]SyncPos{}
+		var sshErr error
+		switch {
+		case len(askable) == 0:
+			// Nothing safe to ask this peer about.
+		case strings.Contains(pt.BaseDir, "'"):
+			sshErr = fmt.Errorf("peer base_dir %q is not usable over ssh", pt.BaseDir)
+		default:
+			text, err := sshOut(pt.Peer.Target(), syncMeasureScript(pt.BaseDir, askable, cfg.Remotes()))
+			if err != nil {
+				sshErr = fmt.Errorf("%w: %s: %v", errPeerUnreachable, pt.Peer.Target(), err)
+			} else {
+				positions = parseSyncPositions(text)
+			}
 		}
-		p, ok := byRel[out[i].Rel]
-		if !ok {
-			// Fold in by name rather than by line order, so a dropped line
-			// leaves that one repo unmeasured instead of shifting every later
-			// answer onto the wrong repo.
-			p = SyncPos{Err: "the peer did not report on this repo"}
+		if sshErr != nil {
+			errs = append(errs, sshErr)
 		}
-		out[i].There = p
+
+		for i, rel := range repos {
+			var pos SyncPos
+			switch {
+			case badRel[rel]:
+				pos = SyncPos{Err: "unsupported character (') in the repo path"}
+			case sshErr != nil:
+				pos = SyncPos{Err: sshErr.Error()}
+			default:
+				if p, ok := positions[rel]; ok {
+					pos = p
+				} else {
+					// The remote script emits exactly one line per repo it was
+					// asked about, so this should never happen for real. Assume
+					// nothing has changed rather than block the whole mesh on one
+					// unreadable answer - ApplySync's own re-measure, or the next
+					// commit, will pick up the truth once the peer replies
+					// properly. A genuine problem (wrong branch, no such repo,
+					// diverged) always arrives as an explicit line, never as
+					// silence.
+					pos = SyncPos{Branch: out[i].Here.Branch, Remote: out[i].Here.Remote,
+						Note: "did not report on this repo"}
+				}
+			}
+			out[i].There = append(out[i].There, PeerPos{Peer: pt.Peer, Pos: pos})
+		}
 	}
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 // measureHere is MeasureSync's local half, mirroring exactly what the remote
@@ -155,52 +237,68 @@ func measureHere(cfg config.Config, rel string) SyncPos {
 	return SyncPos{Branch: branch, Remote: remote, Ahead: ahead, Behind: behind}
 }
 
-// ApplySync performs the repair: every machine that is purely ahead pushes,
-// then every machine that is purely behind fast-forwards. Deliberately in that
-// order and in two passes - a side can only fast-forward onto what the other
-// side has already pushed.
+// ApplySync repairs each repo: exactly one machine publishes - the first that
+// is purely ahead, this machine before any peer - and every other machine
+// then fast-forwards onto it. A second ahead machine is left alone and
+// reported by the re-measure: pushing both would be a merge decision, and
+// that is the user's.
 //
 // Returns the repos as measured again afterwards, so the caller reports what
 // actually happened rather than what was intended.
-func ApplySync(target, peerBase string, cfg config.Config, repos []RepoSync) []RepoSync {
+func ApplySync(cfg config.Config, peers []PeerTarget, repos []RepoSync) []RepoSync {
 	// Warnings that survive the re-measure: a repo can end up perfectly level
 	// and still have left the user something to do.
 	notes := map[string]string{}
 
-	// Pass 1: this machine publishes, so the peer has something to land on.
-	// A failed push is not handled here: pass 3 re-measures, and a repo that
-	// did not move simply reports as still not level.
-	for _, r := range repos {
-		if !r.blocked() && r.Here.canPush() {
-			_, _ = gitcmd.Push(cfg.RepoPath(r.Rel), r.Here.Remote, r.Here.Branch)
-		}
-	}
-
-	// Pass 2: the peer publishes and lands, in one round trip. It runs after
-	// our push, so its fast-forward sees the commits we just sent.
-	var peerRepos []RepoSync
-	for _, r := range repos {
-		if !r.blocked() && (r.There.canPush() || r.There.canFF() || r.Here.canPush()) {
-			peerRepos = append(peerRepos, r)
-		}
-	}
-	if len(peerRepos) > 0 && !strings.Contains(peerBase, "'") {
-		rels := make([]string, 0, len(peerRepos))
-		for _, r := range peerRepos {
-			rels = append(rels, r.Rel)
-		}
-		// Best effort: the re-measure below is what the user is shown, so an
-		// ssh failure here surfaces as "still not level", not as a false claim.
-		_, _ = sshOut(target, syncApplyScript(peerBase, rels, cfg.Remotes()))
-	}
-
-	// Pass 3: this machine lands whatever the peer just published. Repos that
-	// only needed a local fast-forward are included, as are those that became
-	// landable during pass 2.
+	// Pass 1: the one publisher per repo. Repos are grouped by the machine
+	// that will push them, so each peer needs at most one round trip.
+	pushHere := []RepoSync{}
+	pushThere := map[string][]RepoSync{} // keyed by peer host
 	for _, r := range repos {
 		if r.blocked() {
 			continue
 		}
+		if r.Here.canPush() {
+			pushHere = append(pushHere, r)
+			continue
+		}
+		for _, pp := range r.There {
+			if pp.Pos.canPush() {
+				pushThere[pp.Peer.Host] = append(pushThere[pp.Peer.Host], r)
+				break // the first ahead machine only
+			}
+		}
+	}
+	for _, r := range pushHere {
+		_, _ = gitcmd.Push(cfg.RepoPath(r.Rel), r.Here.Remote, r.Here.Branch)
+	}
+	for _, pt := range peers {
+		rs := pushThere[pt.Peer.Host]
+		if len(rs) == 0 {
+			continue
+		}
+		// Best effort: the re-measure below is what the user is shown, so an
+		// ssh failure here surfaces as "still not level", never as a false
+		// claim of success.
+		_, _ = sshOut(pt.Peer.Target(), syncApplyScript(pt.BaseDir, relsOf(rs), cfg.Remotes()))
+	}
+
+	// Pass 2: everyone else lands what was just published. Every peer is
+	// asked about every unblocked repo - the remote script already no-ops on
+	// a repo with nothing to fast-forward.
+	var landable []RepoSync
+	for _, r := range repos {
+		if !r.blocked() {
+			landable = append(landable, r)
+		}
+	}
+	for _, pt := range peers {
+		if len(landable) == 0 {
+			break
+		}
+		_, _ = sshOut(pt.Peer.Target(), syncApplyScript(pt.BaseDir, relsOf(landable), cfg.Remotes()))
+	}
+	for _, r := range landable {
 		dir := cfg.RepoPath(r.Rel)
 		if r.Here.Remote == "" || r.Here.Branch == "" {
 			continue
@@ -210,19 +308,16 @@ func ApplySync(target, peerBase string, cfg config.Config, repos []RepoSync) []R
 		}
 		ahead, behind, err := gitcmd.AheadBehind(dir, r.Here.Remote, r.Here.Branch)
 		if err != nil || behind == 0 || ahead > 0 {
-			// Nothing to land, or diverged - and a diverged tree is never
-			// merged automatically.
-			continue
+			continue // nothing to land, or diverged - never merged automatically
 		}
 		if note := landHere(dir, r.Here.Remote, r.Here.Branch); note != "" {
 			notes[r.Rel] = note
 		}
 	}
 
-	final, _ := MeasureSync(target, peerBase, cfg, relsOf(repos))
-	// On an ssh failure MeasureSync still returns a row per repo, each with
-	// its own Err, so an unmeasurable peer renders as unresolved rather than
-	// as a sync that silently reported nothing.
+	// Pass 3: re-measure, so the user is shown what happened rather than what
+	// was intended, with the warnings that survive a successful sync.
+	final, _ := MeasureSync(cfg, peers, relsOf(repos))
 	for i := range final {
 		if n, ok := notes[final[i].Rel]; ok {
 			final[i].Here.Note = n
@@ -282,7 +377,7 @@ func relsOf(repos []RepoSync) []string {
 // RenderSyncPlan describes what ApplySync would do, and returns whether there
 // is anything to do at all. Printed before acting: this is the one moment
 // git-sync pushes commits the user did not just make, so it says so first.
-func RenderSyncPlan(w io.Writer, peerHost string, repos []RepoSync) bool {
+func RenderSyncPlan(w io.Writer, repos []RepoSync) bool {
 	var work []RepoSync
 	for _, r := range repos {
 		if r.needsWork() {
@@ -297,17 +392,42 @@ func RenderSyncPlan(w io.Writer, peerHost string, repos []RepoSync) bool {
 	fmt.Fprintf(w, "%d of %d selected repos are not level with their remotes:\n", len(work), len(repos))
 	for _, r := range work {
 		fmt.Fprintf(w, "  %s\n", r.Rel)
-		fmt.Fprintf(w, "      here: %s\n", describePos(r.Here))
-		fmt.Fprintf(w, "      %-4s: %s\n", "peer", describePos(r.There))
-		if !r.blocked() {
-			continue
+		isHerePub, peerPub, _ := r.publisher()
+		width := labelWidth(r)
+		fmt.Fprintf(w, "      %s %s\n", padLabel("here:", width), describePos(r.Here, isHerePub))
+		for _, pp := range r.There {
+			fmt.Fprintf(w, "      %s %s\n", padLabel(pp.Peer.Host+":", width),
+				describePos(pp.Pos, peerPub == pp.Peer.Host))
 		}
-		fmt.Fprintf(w, "            -> %s\n", blockedReason(r, peerHost))
+		if r.blocked() {
+			fmt.Fprintf(w, "            -> %s\n", blockedReason(r))
+		}
 	}
 	return true
 }
 
-func describePos(p SyncPos) string {
+// labelWidth is the widest machine label in r ("here" or a peer's host), so
+// every position line in the repo's block lines up under a common column.
+func labelWidth(r RepoSync) int {
+	w := len("here:")
+	for _, p := range r.There {
+		if l := len(p.Peer.Host) + 1; l > w {
+			w = l
+		}
+	}
+	return w
+}
+
+func padLabel(label string, width int) string {
+	return fmt.Sprintf("%-*s", width, label)
+}
+
+// describePos describes one machine's position for the plan. isPublisher
+// says whether ApplySync will actually push from here: a second machine that
+// is also ahead is reported, not silently treated the same as the one that
+// will publish, since pushing both would be a merge decision left to the
+// user.
+func describePos(p SyncPos, isPublisher bool) string {
 	if !p.ok() {
 		return p.Err
 	}
@@ -317,81 +437,96 @@ func describePos(p SyncPos) string {
 	case p.diverged():
 		return fmt.Sprintf("%s diverged from %s: %d ahead, %d behind", p.Branch, p.Remote, p.Ahead, p.Behind)
 	case p.Ahead > 0:
-		return fmt.Sprintf("%s is %d ahead of %s (will push)", p.Branch, p.Ahead, p.Remote)
+		if isPublisher {
+			return fmt.Sprintf("%s is %d ahead of %s (will push)", p.Branch, p.Ahead, p.Remote)
+		}
+		return fmt.Sprintf("%s is %d ahead of %s  (left alone: another machine is ahead)", p.Branch, p.Ahead, p.Remote)
 	default:
 		return fmt.Sprintf("%s is %d behind %s (will fast-forward)", p.Branch, p.Behind, p.Remote)
 	}
 }
 
-func blockedReason(r RepoSync, peerHost string) string {
-	switch {
-	case !r.Here.ok():
+// blockedReason explains why blocked() is true for r, so the plan can say so
+// before acting. Checked in the same order blocked() checks it.
+func blockedReason(r RepoSync) string {
+	if !r.Here.ok() {
 		return "cannot sync this repo here: " + r.Here.Err
-	case !r.There.ok():
-		return "cannot sync this repo on " + peerHost + ": " + r.There.Err
-	case r.Here.Branch != r.There.Branch:
-		return fmt.Sprintf("different branches checked out (%s here, %s on %s); "+
-			"they only sync while both are on the same branch", r.Here.Branch, r.There.Branch, peerHost)
-	default:
-		return "history has diverged; merge it by hand, git-sync will not merge for you"
 	}
+	for _, p := range r.There {
+		if !p.Pos.ok() {
+			return "cannot sync this repo on " + p.Peer.Host + ": " + p.Pos.Err
+		}
+	}
+	for _, p := range r.There {
+		if p.Pos.Branch != r.Here.Branch {
+			return fmt.Sprintf("different branches checked out (%s here, %s on %s); "+
+				"they only sync while both are on the same branch", r.Here.Branch, p.Pos.Branch, p.Peer.Host)
+		}
+	}
+	return "history has diverged; merge it by hand, git-sync will not merge for you"
 }
 
 // RenderSyncResult reports the state after the repair and returns how many
-// repos are still not level. It always prints something: silence would read as
-// "it did not look".
-func RenderSyncResult(w io.Writer, peerHost string, repos []RepoSync) int {
+// repos are still not level. It always prints something: silence would read
+// as "it did not look".
+func RenderSyncResult(w io.Writer, repos []RepoSync) int {
 	var left []RepoSync
 	for _, r := range repos {
 		if r.needsWork() {
 			left = append(left, r)
 		}
 	}
-	// Notes outlive the repair: a repo can be perfectly level and still have
-	// left a conflicted stash behind.
+	// Notes outlive the repair: a repo can end up perfectly level and still
+	// have left a conflicted stash behind, on any machine.
 	for _, r := range repos {
-		for who, note := range map[string]string{"here": r.Here.Note, peerHost: r.There.Note} {
-			if note != "" {
-				fmt.Fprintf(w, "  %s (%s): %s\n", r.Rel, who, note)
+		if r.Here.Note != "" {
+			fmt.Fprintf(w, "  %s (here): %s\n", r.Rel, r.Here.Note)
+		}
+		for _, p := range r.There {
+			if p.Pos.Note != "" {
+				fmt.Fprintf(w, "  %s (%s): %s\n", r.Rel, p.Peer.Host, p.Pos.Note)
 			}
 		}
 	}
 	if len(left) == 0 {
-		fmt.Fprintf(w, "both machines are level on all %d selected repos\n", len(repos))
+		fmt.Fprintf(w, "every machine is level on all %d selected repos\n", len(repos))
 		return 0
 	}
 	fmt.Fprintf(w, "%d of %d repos still need you:\n", len(left), len(repos))
 	for _, r := range left {
-		fmt.Fprintf(w, "  %-24s %s\n", r.Rel, leftoverReason(r, peerHost))
+		fmt.Fprintf(w, "  %s\n", r.Rel)
+		width := labelWidth(r)
+		fmt.Fprintf(w, "      %s %s\n", padLabel("here:", width), describeLeftover(r.Here))
+		for _, p := range r.There {
+			fmt.Fprintf(w, "      %s %s\n", padLabel(p.Peer.Host+":", width), describeLeftover(p.Pos))
+		}
+		if r.blocked() {
+			fmt.Fprintf(w, "      -> %s\n", blockedReason(r))
+		}
 	}
 	fmt.Fprintln(w, "git-sync is installed and will sync these as soon as they are level; "+
 		"until then every commit warns instead.")
 	return len(left)
 }
 
-// leftoverReason explains why a repo is still not level *after* the repair.
-// Distinct from blockedReason, which predicts before acting: a repo that is
-// merely still behind was not diverged, and saying so would send the user
-// looking for a merge conflict that does not exist.
-func leftoverReason(r RepoSync, peerHost string) string {
-	if r.blocked() {
-		return blockedReason(r, peerHost)
+// describeLeftover explains one machine's position *after* the repair.
+// Distinct from describePos, which predicts before acting: a repo that is
+// merely still behind was not diverged, and calling it that would send the
+// user looking for a merge conflict that does not exist.
+func describeLeftover(p SyncPos) string {
+	if !p.ok() {
+		return p.Err
 	}
 	switch {
-	case r.Here.Ahead > 0:
-		return fmt.Sprintf("still %d ahead of %s here; the push did not go through",
-			r.Here.Ahead, r.Here.Remote)
-	case r.Here.Behind > 0:
-		return fmt.Sprintf("still %d behind %s here; the fast-forward did not apply",
-			r.Here.Behind, r.Here.Remote)
-	case r.There.Ahead > 0:
-		return fmt.Sprintf("%s is still %d ahead of %s; its push did not go through",
-			peerHost, r.There.Ahead, r.There.Remote)
-	case r.There.Behind > 0:
-		return fmt.Sprintf("%s is still %d behind %s; its fast-forward did not apply",
-			peerHost, r.There.Behind, r.There.Remote)
+	case p.converged():
+		return fmt.Sprintf("%s level with %s", p.Branch, p.Remote)
+	case p.diverged():
+		return fmt.Sprintf("%s diverged from %s: %d ahead, %d behind; merge it by hand",
+			p.Branch, p.Remote, p.Ahead, p.Behind)
+	case p.Ahead > 0:
+		return fmt.Sprintf("still %d ahead of %s; the push did not go through", p.Ahead, p.Remote)
 	default:
-		return "not level, for a reason git-sync could not determine"
+		return fmt.Sprintf("still %d behind %s; the fast-forward did not apply", p.Behind, p.Remote)
 	}
 }
 

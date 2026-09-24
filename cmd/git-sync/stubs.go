@@ -144,13 +144,18 @@ func levelRepos(cfg config.Config, peerBaseDir string, repos []string, stdout, s
 		return
 	}
 	peerBase := setup.PeerBase(cfg.BaseDir, probe.Home, peerBaseDir)
+	// TODO(Task 12): cmdInstall is still single-peer; once it accepts the
+	// repeatable --peer flag this becomes one PeerTarget per configured peer.
+	peers := []setup.PeerTarget{
+		{Peer: config.Peer{Host: cfg.PeerHost, User: cfg.PeerUser}, BaseDir: peerBase},
+	}
 
-	measured, err := setup.MeasureSync(setup.Target(cfg), peerBase, cfg, repos)
+	measured, err := setup.MeasureSync(cfg, peers, repos)
 	if err != nil {
 		fmt.Fprintf(stderr, "could not compare with %s (%v); skipping the initial sync\n", cfg.PeerHost, err)
 		return
 	}
-	if !setup.RenderSyncPlan(stdout, cfg.PeerHost, measured) {
+	if !setup.RenderSyncPlan(stdout, measured) {
 		return
 	}
 
@@ -161,8 +166,7 @@ func levelRepos(cfg config.Config, peerBaseDir string, repos []string, stdout, s
 		fmt.Fprintln(stdout, "skipped; run install again to level them later")
 		return
 	}
-	setup.RenderSyncResult(stdout, cfg.PeerHost,
-		setup.ApplySync(setup.Target(cfg), peerBase, cfg, measured))
+	setup.RenderSyncResult(stdout, setup.ApplySync(cfg, peers, measured))
 }
 
 // chooseRepos resolves the allowlist: --all and --repos win outright, then the
