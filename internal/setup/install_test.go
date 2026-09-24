@@ -21,7 +21,7 @@ func TestInstallCreatesTheRuntimeLayout(t *testing.T) {
 
 	var out strings.Builder
 	err := setup.Install(setup.Options{
-		BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester",
+		BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "peer.example", User: "tester"}},
 		Self: self, Out: &out,
 	})
 	if err != nil {
@@ -44,7 +44,7 @@ func TestInstallSetsGlobalHooksPath(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	sb.StubSSH(0)
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
-	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self, Out: io.Discard})
+	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self, Out: io.Discard})
 
 	got := strings.TrimSpace(sb.Git(sb.Home, "config", "--global", "core.hooksPath"))
 	if got != config.HooksDir() {
@@ -56,7 +56,7 @@ func TestInstallRejectsAMissingBaseDir(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
 	err := setup.Install(setup.Options{
-		BaseDir: filepath.Join(sb.Home, "nope"), PeerHost: "p", PeerUser: "u",
+		BaseDir: filepath.Join(sb.Home, "nope"), Peers: []config.Peer{{Host: "p", User: "u"}},
 		Self: self, Out: io.Discard,
 	})
 	if err == nil {
@@ -70,7 +70,7 @@ func TestInstallStoresAnAbsoluteBaseDir(t *testing.T) {
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
 	// A relative path must not be stored: the hook runs from arbitrary cwds.
 	testutil.Chdir(t, sb.Home)
-	_ = setup.Install(setup.Options{BaseDir: "code", PeerHost: "p", PeerUser: "u", Self: self, Out: io.Discard})
+	_ = setup.Install(setup.Options{BaseDir: "code", Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self, Out: io.Discard})
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -85,7 +85,7 @@ func TestInstallIsIdempotent(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	sb.StubSSH(0)
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
-	opts := setup.Options{BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self, Out: io.Discard}
+	opts := setup.Options{BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self, Out: io.Discard}
 
 	if err := setup.Install(opts); err != nil {
 		t.Fatal(err)
@@ -102,7 +102,7 @@ func TestInstallUpdatesTheInstalledBinary(t *testing.T) {
 	_ = os.MkdirAll(filepath.Dir(config.BinPath()), 0o755)
 	_ = os.WriteFile(config.BinPath(), []byte("stale"), 0o755)
 
-	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self, Out: io.Discard})
+	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self, Out: io.Discard})
 
 	b, _ := os.ReadFile(config.BinPath())
 	if string(b) == "stale" {
@@ -116,7 +116,7 @@ func TestInstallPreservesActivityHistory(t *testing.T) {
 	_ = activity.Append(activity.Event{Repo: "old/repo", Op: activity.OpPush, Status: activity.StatusOK})
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
 
-	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self, Out: io.Discard})
+	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self, Out: io.Discard})
 
 	events, _ := activity.Read()
 	if len(events) != 1 {
@@ -130,7 +130,7 @@ func TestInstallRecordsTheChosenAllowlist(t *testing.T) {
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
 
 	_ = setup.Install(setup.Options{
-		BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self,
+		BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self,
 		Repos: []string{"work/api", "notes"}, NoPeer: true, Out: io.Discard,
 	})
 
@@ -153,7 +153,7 @@ func TestInstallWithNoReposSelectedSyncsNothing(t *testing.T) {
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
 
 	if err := setup.Install(setup.Options{
-		BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self,
+		BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self,
 		Repos: nil, NoPeer: true, Out: io.Discard,
 	}); err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestInstallReplacesTheAllowlistOnRerun(t *testing.T) {
 	sb.StubSSH(0)
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
 	base := setup.Options{
-		BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self,
+		BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self,
 		NoPeer: true, Out: io.Discard,
 	}
 	base.Repos = []string{"a", "b"}
@@ -189,7 +189,7 @@ func TestUninstallRemovesTheHookButKeepsHistory(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	sb.StubSSH(0)
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
-	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self, Out: io.Discard})
+	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self, Out: io.Discard})
 	_ = activity.Append(activity.Event{Repo: "a", Op: activity.OpPush, Status: activity.StatusOK})
 
 	if err := setup.Uninstall(false, io.Discard); err != nil {
@@ -231,7 +231,7 @@ func TestUninstallPurgeRemovesEverything(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	sb.StubSSH(0)
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
-	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self, Out: io.Discard})
+	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self, Out: io.Discard})
 	_ = activity.Append(activity.Event{Repo: "a", Op: activity.OpPush, Status: activity.StatusOK})
 
 	if err := setup.Uninstall(true, io.Discard); err != nil {
@@ -255,7 +255,7 @@ func TestInstallLeavesNoTempFilesBehind(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	sb.StubSSH(0)
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
-	if err := setup.Install(setup.Options{BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self, Out: io.Discard}); err != nil {
+	if err := setup.Install(setup.Options{BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -275,7 +275,7 @@ func TestHookShimInvokesTheInstalledBinary(t *testing.T) {
 	marker := filepath.Join(sb.Home, "hook-ran")
 	self := testutil.WriteScript(t, sb, "git-sync-fake",
 		"#!/bin/sh\necho \"$@\" > "+marker+"\n")
-	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u", Self: self, Out: io.Discard})
+	_ = setup.Install(setup.Options{BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}}, Self: self, Out: io.Discard})
 
 	cmd := exec.Command(filepath.Join(config.HooksDir(), "post-commit"))
 	cmd.Dir = sb.Home

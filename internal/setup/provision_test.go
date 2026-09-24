@@ -171,7 +171,7 @@ func TestInstallSucceedsWhenThePeerIsUnreachable(t *testing.T) {
 
 	var out strings.Builder
 	err := setup.Install(setup.Options{
-		BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "u",
+		BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "peer.example", User: "u"}},
 		Self: self, Repos: []string{"proj"}, Out: &out,
 	})
 	if err != nil {
@@ -191,7 +191,7 @@ func TestInstallNoPeerSkipsProvisioning(t *testing.T) {
 	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
 
 	_ = setup.Install(setup.Options{
-		BaseDir: sb.BaseDir, PeerHost: "p", PeerUser: "u",
+		BaseDir: sb.BaseDir, Peers: []config.Peer{{Host: "p", User: "u"}},
 		Self: self, Repos: []string{"proj"}, NoPeer: true, Out: io.Discard,
 	})
 	if calls := sb.SSHCalls(); strings.Contains(calls, "config.toml") {

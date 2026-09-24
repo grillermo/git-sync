@@ -25,48 +25,86 @@ import (
 	"github.com/grillermo/git-sync/internal/syncer"
 )
 
+// peerFlag collects repeatable --peer user@host[:base_dir] values.
+type peerFlag []config.Peer
+
+func (f *peerFlag) String() string { return "" }
+
+func (f *peerFlag) Set(s string) error {
+	user, rest, ok := strings.Cut(s, "@")
+	if !ok || user == "" || rest == "" {
+		return fmt.Errorf("want user@host[:base_dir], got %q", s)
+	}
+	host, base, _ := strings.Cut(rest, ":")
+	p := config.Peer{User: user, Host: host, BaseDir: base}
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	*f = append(*f, p)
+	return nil
+}
+
 func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	peerHost := fs.String("peer-host", "", "hostname of the other machine")
-	peerUser := fs.String("peer-user", "", "username on the other machine")
+	var peerFlags peerFlag
+	fs.Var(&peerFlags, "peer", "another machine in the mesh, as user@host[:base_dir] (repeatable)")
+	peerHost := fs.String("peer-host", "", "hostname of the other machine (single-peer alias for --peer)")
+	peerUser := fs.String("peer-user", "", "username on the other machine (single-peer alias for --peer)")
 	all := fs.Bool("all", false, "sync every repo found; skip the picker")
 	only := fs.String("repos", "", "comma-separated repos to sync; skips the picker")
-	noPeer := fs.Bool("no-peer", false, "do not provision the peer machine")
+	noPeer := fs.Bool("no-peer", false, "do not provision any peer machine")
 	noInitialSync := fs.Bool("no-initial-sync", false,
 		"do not push/fast-forward the selected repos level with their remotes")
 	selfHost := fs.String("self-host", "", "this machine's hostname, as the peer sees it")
 	selfUser := fs.String("self-user", "", "the account the peer should ssh back into")
-	peerBaseDir := fs.String("peer-base-dir", "", "the peer's sync root (default: same path relative to $HOME)")
+	peerBaseDir := fs.String("peer-base-dir", "",
+		"base_dir override for --peer-host/--peer-user (use user@host:base_dir with --peer instead)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: git-sync install [--peer-host H --peer-user U] <base_dir>")
+		fmt.Fprintln(stderr, "usage: git-sync install [--peer user@host[:base_dir] ...] <base_dir>")
 		return 2
 	}
 
-	host, user := *peerHost, *peerUser
-	if host == "" || user == "" {
-		// Fall back to an existing config, then to prompting.
-		if cfg, err := config.Load(); err == nil {
-			if host == "" {
-				host = cfg.PeerHost
-			}
-			if user == "" {
-				user = cfg.PeerUser
-			}
+	// Step 1: --peer-host/--peer-user is the single-peer alias, folded into
+	// the same config.Peer shape as a --peer value.
+	var peers []config.Peer
+	if *peerHost != "" || *peerUser != "" {
+		p := config.Peer{Host: *peerHost, User: *peerUser, BaseDir: *peerBaseDir}
+		if err := p.Validate(); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
 		}
+		peers = append(peers, p)
 	}
-	if host == "" {
-		host = prompt(stdout, "peer hostname: ")
+	peers = append(peers, peerFlags...)
+
+	// Step 2: merge with whatever is already configured - a re-run adds to
+	// the mesh rather than forgetting it - then prompt only if that leaves
+	// nothing at all. config.Config.PeerList applies the same
+	// validate/dedup/drop-self rules everything else in the mesh relies on,
+	// and a flag-supplied peer wins over a stored one with the same target
+	// since it is listed first.
+	if cfg, err := config.Load(); err == nil {
+		peers = append(peers, cfg.PeerList()...)
 	}
-	if user == "" {
-		user = prompt(stdout, "peer username: ")
-	}
-	if host == "" || user == "" {
-		fmt.Fprintln(stderr, "peer host and user are required (--peer-host, --peer-user)")
-		return 2
+	peers = config.Config{Peers: peers}.PeerList()
+
+	if len(peers) == 0 && !*noPeer {
+		host := prompt(stdout, "peer hostname: ")
+		user := prompt(stdout, "peer username: ")
+		if host == "" || user == "" {
+			fmt.Fprintln(stderr, "at least one peer is required (--peer user@host, or --no-peer)")
+			return 2
+		}
+		p := config.Peer{Host: host, User: user}
+		if err := p.Validate(); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		peers = append(peers, p)
 	}
 
 	base, err := filepath.Abs(fs.Arg(0))
@@ -75,17 +113,29 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Stage "connect": check the peer is reachable over key auth before
-	// picking repos - asking after the user has already ticked forty repos
-	// would waste that work if the peer turns out unreachable. Reported as a
-	// warning either way; install continues regardless, same as every other
+	// Step 3: check every peer is reachable over key auth before picking
+	// repos - asking after the user has already ticked forty repos would
+	// waste that work if a peer turns out unreachable. Reported as a warning
+	// either way; install continues regardless, same as every other
 	// peer-unreachable case. Skipped along with the rest of peer provisioning
-	// under --no-peer, since nothing is going to ssh there.
+	// under --no-peer, since nothing is going to ssh anywhere.
+	var reachable []config.Peer
 	if !*noPeer {
-		target := setup.Target(config.Config{PeerHost: host, PeerUser: user})
-		if err := setup.Reachable(target); err != nil {
-			fmt.Fprintf(stderr, "could not reach %s (%v); continuing\n", host, err)
+		for _, p := range peers {
+			if err := setup.Reachable(p.Target()); err != nil {
+				fmt.Fprintf(stderr, "could not reach %s (%v); continuing\n", p.Host, err)
+				continue
+			}
+			reachable = append(reachable, p)
 		}
+
+		// Step 4: every machine in the mesh has to be able to ssh to every
+		// other - a missing key between two *peers*, a pair this machine
+		// never exercises itself, would otherwise only show up later as a
+		// failing notify nobody is watching. Warning only: the rest of the
+		// mesh is still worth setting up.
+		self := config.Peer{Host: resolveSelfHost(*selfHost), User: resolveSelfUser(*selfUser)}
+		setup.RenderKeyChecks(stdout, setup.CheckKeys(self, peers))
 	}
 
 	fmt.Fprintf(stdout, "choosing repos under %s\n", base)
@@ -99,18 +149,24 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	// Step 5: ask each reachable peer which of the chosen repos it actually
+	// has, one machine at a time - the user can still quit here with q,
+	// before anything is written on either machine.
 	if !*noPeer {
-		fmt.Fprintf(stdout, "checking those repos on %s\n", host)
 		remotes := cfgRemotes()
-		if !checkPeer(config.Config{BaseDir: base, PeerHost: host, PeerUser: user, RemoteNames: remotes}, *peerBaseDir, repoWants(config.Config{BaseDir: base, RemoteNames: remotes}, repos), stdout, stderr) {
-			fmt.Fprintln(stdout, "cancelled; nothing was installed and the peer was not touched")
-			return 0
+		wants := repoWants(config.Config{BaseDir: base, RemoteNames: remotes}, repos)
+		for _, p := range reachable {
+			fmt.Fprintf(stdout, "checking those repos on %s\n", p.Host)
+			if !checkPeer(p, config.Config{BaseDir: base, RemoteNames: remotes}, wants, stdout, stderr) {
+				fmt.Fprintln(stdout, "cancelled; nothing was installed and the peers were not touched")
+				return 0
+			}
 		}
 	}
 
 	fmt.Fprintln(stdout, "installing")
 	if err := setup.Install(setup.Options{
-		BaseDir: fs.Arg(0), PeerHost: host, PeerUser: user, Repos: repos,
+		BaseDir: fs.Arg(0), Peers: peers, Repos: repos,
 		NoPeer: *noPeer, SelfHost: *selfHost, SelfUser: *selfUser,
 		PeerBaseDir: *peerBaseDir, Out: stdout,
 	}); err != nil {
@@ -118,42 +174,67 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Stage "level": bring both machines up to the shared remote now that the
-	// hook is armed. A repo that was already out of step stays out of step
-	// forever otherwise - receive only ever fast-forwards, so a single
-	// unpushed commit on either side makes every later sync warn instead of
-	// applying, and nothing retries it.
+	// Step 7 / stage "level": bring every machine up to the shared remote now
+	// that the hook is armed everywhere. A repo that was already out of step
+	// stays out of step forever otherwise - receive only ever fast-forwards,
+	// so a single unpushed commit on any machine makes every later sync warn
+	// instead of applying, and nothing retries it.
 	if !*noPeer && !*noInitialSync {
-		levelRepos(config.Config{BaseDir: base, PeerHost: host, PeerUser: user, RemoteNames: cfgRemotes()},
-			*peerBaseDir, repos, stdout, stderr)
+		levelRepos(config.Config{BaseDir: base, RemoteNames: cfgRemotes()}, peers, repos, stdout, stderr)
 	}
 	return 0
 }
 
-// levelRepos runs the initial synchronisation: measure both machines against
-// the shared remote, say what it will do, then push and fast-forward.
+// resolveSelfHost is the hostname install tells a peer to reach this machine
+// back on, mirroring setup.Install's own default so the key check asks about
+// exactly the same identity install will provision.
+func resolveSelfHost(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	h, _ := os.Hostname()
+	return h
+}
+
+// resolveSelfUser mirrors resolveSelfHost for the account the peer ssh's
+// back into.
+func resolveSelfUser(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	return os.Getenv("USER")
+}
+
+// levelRepos runs the initial synchronisation: measure every machine in the
+// mesh against the shared remote, say what it will do, then push and
+// fast-forward. One peer failing to answer never stops the others from being
+// levelled - it is reported and skipped.
 //
 // Never fatal. The install itself has already succeeded by this point, and a
 // repo that cannot be levelled is a thing the user must fix by hand in the
 // repo - not a reason to leave the machine unconfigured.
-func levelRepos(cfg config.Config, peerBaseDir string, repos []string, stdout, stderr io.Writer) {
+func levelRepos(cfg config.Config, peers []config.Peer, repos []string, stdout, stderr io.Writer) {
 	fmt.Fprintln(stdout, "levelling repos with their remotes")
-	probe, err := setup.Probe(setup.Target(cfg))
-	if err != nil {
-		fmt.Fprintf(stderr, "could not reach %s (%v); skipping the initial sync\n", cfg.PeerHost, err)
-		return
+
+	var targets []setup.PeerTarget
+	for _, p := range peers {
+		probe, err := setup.Probe(p.Target())
+		if err != nil {
+			fmt.Fprintf(stderr, "could not reach %s (%v); skipping the initial sync there\n", p.Host, err)
+			continue
+		}
+		targets = append(targets, setup.PeerTarget{
+			Peer: p, BaseDir: setup.PeerBase(cfg.BaseDir, probe.Home, p.BaseDir),
+		})
 	}
-	peerBase := setup.PeerBase(cfg.BaseDir, probe.Home, peerBaseDir)
-	// TODO(Task 12): cmdInstall is still single-peer; once it accepts the
-	// repeatable --peer flag this becomes one PeerTarget per configured peer.
-	peers := []setup.PeerTarget{
-		{Peer: config.Peer{Host: cfg.PeerHost, User: cfg.PeerUser}, BaseDir: peerBase},
+	if len(targets) == 0 {
+		fmt.Fprintln(stderr, "no reachable peers; skipping the initial sync")
+		return
 	}
 
-	measured, err := setup.MeasureSync(cfg, peers, repos)
+	measured, err := setup.MeasureSync(cfg, targets, repos)
 	if err != nil {
-		fmt.Fprintf(stderr, "could not compare with %s (%v); skipping the initial sync\n", cfg.PeerHost, err)
-		return
+		fmt.Fprintf(stderr, "could not fully compare with the mesh (%v); continuing with what could be measured\n", err)
 	}
 	if !setup.RenderSyncPlan(stdout, measured) {
 		return
@@ -166,7 +247,7 @@ func levelRepos(cfg config.Config, peerBaseDir string, repos []string, stdout, s
 		fmt.Fprintln(stdout, "skipped; run install again to level them later")
 		return
 	}
-	setup.RenderSyncResult(stdout, setup.ApplySync(cfg, peers, measured))
+	setup.RenderSyncResult(stdout, setup.ApplySync(cfg, targets, measured))
 }
 
 // chooseRepos resolves the allowlist: --all and --repos win outright, then the
@@ -236,26 +317,27 @@ func repoWants(cfg config.Config, repos []string) []setup.RepoWant {
 	return out
 }
 
-// checkPeer asks the peer which selected repos it has, prints the mismatches
+// checkPeer asks one peer which selected repos it has, prints the mismatches
 // and returns whether to go ahead. The user can quit here with q, just as in
-// the picker: nothing has been written yet, on either machine.
-func checkPeer(cfg config.Config, peerBaseDir string, repos []setup.RepoWant, stdout, stderr io.Writer) bool {
-	probe, err := setup.Probe(setup.Target(cfg))
+// the picker: nothing has been written yet, on any machine. Called once per
+// reachable peer, so a mismatch on one machine never hides one on another.
+func checkPeer(peer config.Peer, cfg config.Config, repos []setup.RepoWant, stdout, stderr io.Writer) bool {
+	target := peer.Target()
+	probe, err := setup.Probe(target)
 	if err != nil {
 		// Install already survives an unreachable peer; do not turn a warning
 		// into a dead end here.
-		fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", cfg.PeerHost, err)
+		fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", peer.Host, err)
 		return true
 	}
 
-	checks, err := setup.CheckPeerReposWithRemotes(setup.Target(cfg),
-		setup.PeerBase(cfg.BaseDir, probe.Home, peerBaseDir), repos, cfg.Remotes())
+	peerBase := setup.PeerBase(cfg.BaseDir, probe.Home, peer.BaseDir)
+	checks, err := setup.CheckPeerReposWithRemotes(target, peerBase, repos, cfg.Remotes())
 	if err != nil {
-		fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", cfg.PeerHost, err)
+		fmt.Fprintf(stderr, "could not check %s (%v); continuing\n", peer.Host, err)
 		return true
 	}
-	n := setup.RenderRepoChecks(stdout, cfg.PeerHost,
-		setup.PeerBase(cfg.BaseDir, probe.Home, peerBaseDir), checks)
+	n := setup.RenderRepoChecks(stdout, peer.Host, peerBase, checks)
 	if n == 0 {
 		return true
 	}
@@ -311,10 +393,31 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	purge := fs.Bool("purge", false, "also delete config and activity history")
+	local := fs.Bool("local", false, "only uninstall this machine, not the rest of the mesh")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if err := setup.Uninstall(*purge, stdout); err != nil {
+
+	if *local {
+		if err := setup.Uninstall(*purge, stdout); err != nil {
+			fmt.Fprintln(stderr, "uninstall failed:", err)
+			return 1
+		}
+		return 0
+	}
+
+	// No config (never installed, or already uninstalled) means there is no
+	// mesh to know about - fall back to the same local-only uninstall.
+	cfg, err := config.Load()
+	if err != nil {
+		if err := setup.Uninstall(*purge, stdout); err != nil {
+			fmt.Fprintln(stderr, "uninstall failed:", err)
+			return 1
+		}
+		return 0
+	}
+
+	if err := setup.UninstallMesh(cfg, *purge, stdout); err != nil {
 		fmt.Fprintln(stderr, "uninstall failed:", err)
 		return 1
 	}

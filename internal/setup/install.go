@@ -13,17 +13,18 @@ import (
 )
 
 type Options struct {
-	BaseDir  string
-	PeerHost string
-	PeerUser string
-	Repos    []string // the allowlist chosen by the picker (or --all / --repos)
-	Self     string   // path to the binary to install; defaults to os.Executable()
-	Out      io.Writer
+	BaseDir string
+	Peers   []config.Peer // every other machine in the mesh
+	Repos   []string      // the allowlist chosen by the picker (or --all / --repos)
+	Self    string        // path to the binary to install; defaults to os.Executable()
+	Out     io.Writer
 
 	// Peer provisioning (Task 11).
-	NoPeer      bool
-	SelfHost    string
-	SelfUser    string
+	NoPeer   bool
+	SelfHost string
+	SelfUser string
+	// PeerBaseDir overrides the derived base_dir for a peer that did not
+	// specify its own (config.Peer.BaseDir wins when a peer sets it).
 	PeerBaseDir string
 }
 
@@ -95,13 +96,13 @@ func Install(o Options) error {
 	fmt.Fprintf(o.Out, "installed into %s\n", config.Home())
 
 	cfg := config.Config{
-		BaseDir: base, PeerHost: o.PeerHost, PeerUser: o.PeerUser, Repos: o.Repos,
+		BaseDir: base, Peers: o.Peers, Repos: o.Repos,
 	}
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
-	fmt.Fprintf(o.Out, "syncing %d repos under %s with %s@%s\n",
-		len(cfg.Repos), base, cfg.PeerUser, cfg.PeerHost)
+	fmt.Fprintf(o.Out, "syncing %d repos under %s with %d peer(s)\n",
+		len(cfg.Repos), base, len(cfg.PeerList()))
 
 	// core.hooksPath is global and exclusive: this points git at our hooks
 	// for every hook type in every repo on the machine, replacing any
@@ -126,21 +127,35 @@ func Install(o Options) error {
 		selfUser = os.Getenv("USER")
 	}
 
-	err = ProvisionPeer(PeerOptions{
-		Cfg:  cfg,
-		Peer: config.Peer{Host: o.PeerHost, User: o.PeerUser},
-		Self: config.BinPath(), SelfHost: selfHost, SelfUser: selfUser,
-		PeerBaseDir: o.PeerBaseDir, Out: o.Out,
-	})
-	switch {
-	case err == nil:
-		fmt.Fprintln(o.Out, "done. Both machines are set up.")
-	case IsPeerUnreachable(err):
-		// The local half is correct and useful on its own.
-		fmt.Fprintf(o.Out, "WARNING: peer %s not provisioned: unreachable.\n", cfg.PeerHost)
-		fmt.Fprintln(o.Out, "         This machine is set up. Re-run install once the peer is up.")
-	default:
-		return fmt.Errorf("provisioning the peer: %w", err)
+	// Provision every machine in the mesh. One peer being unreachable is a
+	// warning, not a reason to abandon the others - each gets its own
+	// independent attempt and its own report.
+	var anyUnreachable bool
+	for _, p := range cfg.PeerList() {
+		override := p.BaseDir
+		if override == "" {
+			override = o.PeerBaseDir
+		}
+		err := ProvisionPeer(PeerOptions{
+			Cfg: cfg, Peer: p,
+			Self: config.BinPath(), SelfHost: selfHost, SelfUser: selfUser,
+			PeerBaseDir: override, Out: o.Out,
+		})
+		switch {
+		case err == nil:
+			// ProvisionPeer already reported what it did.
+		case IsPeerUnreachable(err):
+			// The local half is correct and useful on its own.
+			fmt.Fprintf(o.Out, "WARNING: peer %s not provisioned: unreachable.\n", p.Host)
+			anyUnreachable = true
+		default:
+			return fmt.Errorf("provisioning %s: %w", p.Host, err)
+		}
+	}
+	if anyUnreachable {
+		fmt.Fprintln(o.Out, "This machine is set up. Re-run install once every peer is up.")
+	} else {
+		fmt.Fprintln(o.Out, "done. Every machine is set up.")
 	}
 	return nil
 }
@@ -183,6 +198,37 @@ func Uninstall(purge bool, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "kept your config and activity history in %s\n", config.Home())
 	fmt.Fprintln(out, "(git-sync uninstall --purge removes those too)")
+	return nil
+}
+
+// UninstallMesh removes git-sync from every machine in the mesh, this one
+// last: a peer is reachable only while our own config still names it, so
+// uninstalling here first would strand any peer we could not reach.
+func UninstallMesh(cfg config.Config, purge bool, out io.Writer) error {
+	if out == nil {
+		out = io.Discard
+	}
+
+	var unreachable []config.Peer
+	for _, p := range cfg.PeerList() {
+		cmd := "~/.gitsync/bin/git-sync uninstall --local"
+		if purge {
+			cmd += " --purge"
+		}
+		if err := ssh(p.Target(), cmd); err != nil {
+			unreachable = append(unreachable, p)
+			continue
+		}
+		fmt.Fprintf(out, "uninstalled git-sync on %s\n", p.Host)
+	}
+
+	if err := Uninstall(purge, out); err != nil {
+		return err
+	}
+
+	for _, p := range unreachable {
+		fmt.Fprintf(out, "WARNING: could not reach %s; run there by hand: git-sync uninstall\n", p.Host)
+	}
 	return nil
 }
 
