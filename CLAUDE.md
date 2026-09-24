@@ -166,7 +166,10 @@ Package layering, leaves to composition:
     commit attempted mid-receive is refused by `pre-commit`/`pre-push` and
     so can never itself get broadcast out.
 - **`internal/scan`** / **`internal/picker`** — repo discovery under
-  `base_dir` and the bubbletea checkbox TUI for choosing which to sync.
+  `base_dir`, and a thin adapter (`Rows`/`Config`/`Choose`) that hands the
+  scan to `github.com/grillermo/chicle` (pinned at a published tag, not a
+  `replace`) as a multi-select list for choosing which to sync. The UI itself
+  lives in chicle and draws on `/dev/tty`.
 - **`internal/setup`** — `install.go` (`Install`/`Uninstall` for the local
   machine, plus mesh-wide `UninstallMesh` which sshes each peer to run its
   own local uninstall before cleaning up here — copies the binary, writes the

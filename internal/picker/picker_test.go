@@ -1,13 +1,12 @@
-package picker_test
+package picker
 
 import (
-	"fmt"
-	"regexp"
+	"reflect"
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/grillermo/git-sync/internal/picker"
+	"github.com/grillermo/chicle"
+
 	"github.com/grillermo/git-sync/internal/scan"
 )
 
@@ -19,447 +18,185 @@ func found(rels ...string) []scan.Repo {
 	return out
 }
 
-func key(s string) tea.KeyMsg {
-	switch s {
-	case "down":
-		return tea.KeyMsg{Type: tea.KeyDown}
-	case "up":
-		return tea.KeyMsg{Type: tea.KeyUp}
-	case "space":
-		return tea.KeyMsg{Type: tea.KeySpace}
-	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
+func keys(rows []chicle.Row) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.Key
 	}
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	return out
 }
 
-func sized(m picker.Model) picker.Model {
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	return next.(picker.Model)
-}
-
-func TestFirstInstallEverythingIsNewAndUnticked(t *testing.T) {
-	m := picker.New(found("notes", "work/api"), nil)
-	if got := m.Selected(); len(got) != 0 {
-		t.Errorf("Selected() = %v, want nothing ticked on a first install", got)
-	}
-}
-
-func TestNewReposComeFirstAndAlreadySyncingArePreTicked(t *testing.T) {
-	// notes and work/api are already syncing; zzz-new is new. Despite sorting
-	// last alphabetically, the new one must appear first.
-	m := sized(picker.New(found("notes", "work/api", "zzz-new"), []string{"notes", "work/api"}))
-
-	if got := m.RelAt(0); got != "zzz-new" {
-		t.Errorf("first row = %q, want the new repo", got)
-	}
-	sel := m.Selected()
-	if len(sel) != 2 || sel[0] != "notes" || sel[1] != "work/api" {
-		t.Errorf("Selected() = %v, want the two already-syncing repos pre-ticked", sel)
-	}
-
-	view := m.View()
-	if !strings.Contains(view, "NEW") || !strings.Contains(view, "ALREADY SYNCING") {
-		t.Errorf("view should label both sections:\n%s", view)
-	}
-	if strings.Index(view, "NEW") > strings.Index(view, "ALREADY SYNCING") {
-		t.Errorf("NEW must come before ALREADY SYNCING:\n%s", view)
-	}
-}
-
-func TestAlreadySyncingReposAreLockedAndCannotBeUnticked(t *testing.T) {
-	// A repo already installed (in the config) must not be droppable through
-	// the picker: move onto it and try to untick - it stays ticked.
-	m := sized(picker.New(found("zzz-new", "notes"), []string{"notes"}))
-	// notes is the already-syncing row, which sorts after the new one.
-	var at int
-	for i := 0; i < 2; i++ {
-		if m.RelAt(i) == "notes" {
-			at = i
+func rowFor(t *testing.T, rows []chicle.Row, rel string) chicle.Row {
+	t.Helper()
+	for _, r := range rows {
+		if r.Key == rel {
+			return r
 		}
 	}
-	for i := 0; i < at; i++ {
-		m = apply(t, m, "down")
-	}
-	m = apply(t, m, "space")
-	sel := m.Selected()
-	if len(sel) != 1 || sel[0] != "notes" {
-		t.Errorf("Selected() = %v, want notes still locked on", sel)
-	}
-	if !strings.Contains(stripANSI(m.View()), "locked") {
-		t.Errorf("a locked row should say so:\n%s", m.View())
+	t.Fatalf("no row for %q in %v", rel, keys(rows))
+	return chicle.Row{}
+}
+
+func text(r chicle.Row) string { return strings.Join(r.Cols, " ") }
+
+func TestFirstInstallEverythingIsUntickedAndUnsectioned(t *testing.T) {
+	rows := Rows(found("notes", "work/api"), nil)
+	for _, r := range rows {
+		if r.Ticked || r.Locked {
+			t.Errorf("%s: ticked=%v locked=%v, want neither on a first install", r.Key, r.Ticked, r.Locked)
+		}
+		if r.Section != "" {
+			t.Errorf("%s: section %q, want none so chicle draws no headings", r.Key, r.Section)
+		}
 	}
 }
 
-func TestNoneKeepsLockedReposTicked(t *testing.T) {
-	// [n] clears the tickable rows but must leave already-installed ones on.
-	m := sized(picker.New(found("new-a", "notes"), []string{"notes"}))
-	m = apply(t, m, "a") // tick everything tickable
-	m = apply(t, m, "n") // then clear
-	sel := m.Selected()
-	if len(sel) != 1 || sel[0] != "notes" {
-		t.Errorf("Selected() = %v, want only the locked repo to survive [n]", sel)
+func TestNewReposComeFirstAndAlreadySyncingAreLockedAndTicked(t *testing.T) {
+	// zzz-new sorts last alphabetically but is the only thing that changed.
+	rows := Rows(found("notes", "work/api", "zzz-new"), []string{"notes", "work/api"})
+
+	if got, want := keys(rows), []string{"zzz-new", "notes", "work/api"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+	if r := rowFor(t, rows, "zzz-new"); r.Ticked || r.Locked || r.Section != "NEW" {
+		t.Errorf("zzz-new = %+v, want unticked, unlocked, NEW", r)
+	}
+	for _, rel := range []string{"notes", "work/api"} {
+		if r := rowFor(t, rows, rel); !r.Ticked || !r.Locked || r.Section != "ALREADY SYNCING" {
+			t.Errorf("%s = %+v, want ticked, locked, ALREADY SYNCING", rel, r)
+		}
 	}
 }
 
-func TestFirstInstallOmitsSectionHeaders(t *testing.T) {
-	m := sized(picker.New(found("notes", "work/api"), nil))
-	if strings.Contains(m.View(), "ALREADY SYNCING") {
-		t.Errorf("nothing is syncing yet, so that header is noise:\n%s", m.View())
-	}
-}
-
-func TestSpaceTogglesTheHighlightedRepo(t *testing.T) {
-	m := sized(picker.New(found("notes", "work/api"), nil))
-	m = apply(t, m, "space")
-	if got := m.Selected(); len(got) != 1 || got[0] != "notes" {
-		t.Errorf("Selected() = %v, want [notes]", got)
-	}
-	m = apply(t, m, "space")
-	if got := m.Selected(); len(got) != 0 {
-		t.Errorf("Selected() = %v, want it toggled back off", got)
-	}
-}
-
-func TestArrowsMoveTheHighlight(t *testing.T) {
-	m := sized(picker.New(found("notes", "work/api"), nil))
-	m = apply(t, m, "down", "space")
-	if got := m.Selected(); len(got) != 1 || got[0] != "work/api" {
-		t.Errorf("Selected() = %v, want [work/api]", got)
-	}
-}
-
-func TestHighlightDoesNotRunOffEitherEnd(t *testing.T) {
-	m := sized(picker.New(found("a", "b"), nil))
-	m = apply(t, m, "up", "up", "space")
-	if got := m.Selected(); len(got) != 1 || got[0] != "a" {
-		t.Errorf("Selected() = %v, want [a] - up past the top should clamp", got)
-	}
-	m = apply(t, m, "down", "down", "down", "space")
-	if got := m.Selected(); len(got) != 2 {
-		t.Errorf("Selected() = %v, want both - down past the end should clamp", got)
-	}
-}
-
-func TestSelectAllAndNone(t *testing.T) {
-	m := sized(picker.New(found("a", "b", "c"), nil))
-	m = apply(t, m, "a")
-	if got := m.Selected(); len(got) != 3 {
-		t.Errorf("Selected() = %v, want all three", got)
-	}
-	m = apply(t, m, "n")
-	if got := m.Selected(); len(got) != 0 {
-		t.Errorf("Selected() = %v, want none", got)
-	}
-}
-
-func TestEnterConfirms(t *testing.T) {
-	m := sized(picker.New(found("a"), nil))
-	m = apply(t, m, "space")
-	next, cmd := m.Update(key("enter"))
-	m = next.(picker.Model)
-	if !m.Confirmed() {
-		t.Error("enter should confirm")
-	}
-	if m.Cancelled() {
-		t.Error("enter must not also cancel")
-	}
-	if cmd == nil {
-		t.Error("enter should quit the program")
-	}
-}
-
-func TestQuitCancels(t *testing.T) {
-	m := sized(picker.New(found("a"), nil))
-	next, cmd := m.Update(key("q"))
-	m = next.(picker.Model)
-	if !m.Cancelled() {
-		t.Error("q should cancel")
-	}
-	if m.Confirmed() {
-		t.Error("q must not confirm")
-	}
-	if cmd == nil {
-		t.Error("q should quit the program")
-	}
-}
-
-func TestMissingReposAreShownAndPreTicked(t *testing.T) {
+func TestMissingReposAreKeptTickedButNotLocked(t *testing.T) {
 	// work/gone is in the config but the scan did not find it - an unmounted
 	// volume, say. It must not be silently dropped.
-	m := sized(picker.New(found("notes"), []string{"notes", "work/gone"}))
-	if !strings.Contains(m.View(), "MISSING") {
-		t.Errorf("view should have a MISSING section:\n%s", m.View())
+	rows := Rows(found("notes"), []string{"notes", "work/gone"})
+
+	r := rowFor(t, rows, "work/gone")
+	if !r.Ticked {
+		t.Error("a missing repo should stay ticked so saving does not drop it")
 	}
-	sel := m.Selected()
-	if len(sel) != 2 {
-		t.Errorf("Selected() = %v, want the missing repo kept by default", sel)
+	if r.Locked {
+		t.Error("a missing repo should be removable: the user may have deleted it on purpose")
+	}
+	if !strings.HasPrefix(r.Section, "MISSING") {
+		t.Errorf("section = %q, want MISSING", r.Section)
+	}
+	if !strings.Contains(text(r), "not found on disk") {
+		t.Errorf("a missing row should say why: %q", text(r))
+	}
+	if strings.Contains(text(r), "no remote") {
+		t.Errorf("a missing row has no remote data, it must not be blamed on one: %q", text(r))
+	}
+	if got := keys(rows); got[len(got)-1] != "work/gone" {
+		t.Errorf("order = %v, want MISSING last", got)
 	}
 }
 
-func TestSelectedIsSortedAndStable(t *testing.T) {
+func TestRowNamesTheRemoteItWouldSyncThrough(t *testing.T) {
+	rows := Rows([]scan.Repo{{Rel: "gh", Commits: 3, Remote: "github", RemoteURL: "u"}}, nil)
+	if got := text(rows[0]); !strings.Contains(got, "github") || !strings.Contains(got, "3 commits") {
+		t.Errorf("row should name the remote and commit count: %q", got)
+	}
+}
+
+func TestARepoWithNoRemoteIsFlaggedButStillPickable(t *testing.T) {
+	rows := Rows([]scan.Repo{{Rel: "solo", Commits: 3}}, nil)
+	if got := text(rows[0]); !strings.Contains(got, "no remote") {
+		t.Errorf("a repo that cannot sync must say why: %q", got)
+	}
+	if rows[0].Locked {
+		t.Error("a remoteless repo is a warning, not a veto")
+	}
+}
+
+func TestRowsAreInOneColumnPerConfigColumn(t *testing.T) {
+	cfg := Config(found("a"), nil)
+	for _, r := range cfg.Rows {
+		if len(r.Cols) != len(cfg.Columns) {
+			t.Errorf("%s has %d cells for %d columns", r.Key, len(r.Cols), len(cfg.Columns))
+		}
+	}
+}
+
+func run(t *testing.T, cfg chicle.Config, label string, ticked ...string) chicle.Outcome {
+	t.Helper()
+	sel := chicle.Selection{}
+	for _, rel := range ticked {
+		sel.Ticked = append(sel.Ticked, chicle.Row{Key: rel})
+	}
+	for _, a := range cfg.Actions {
+		if a.Label == label {
+			if a.Run == nil {
+				return chicle.Outcome{Done: true}
+			}
+			return a.Run(sel)
+		}
+	}
+	t.Fatalf("no %q action in %v", label, cfg.Actions)
+	return chicle.Outcome{}
+}
+
+func TestSavingReturnsTheTickedReposSorted(t *testing.T) {
 	// The result goes straight into config.toml; keep it deterministic.
-	m := sized(picker.New(found("zzz", "aaa", "mmm"), nil))
-	m = apply(t, m, "a")
-	got := m.Selected()
-	want := []string{"aaa", "mmm", "zzz"}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("Selected() = %v, want %v", got, want)
-		}
+	cfg := Config(found("zzz", "aaa", "mmm"), nil)
+	out := run(t, cfg, "Save", "zzz", "aaa", "mmm")
+	if !out.Done {
+		t.Fatal("Save must end the picker")
+	}
+	got, ok := decode(out.Result)
+	if want := []string{"aaa", "mmm", "zzz"}; !ok || !reflect.DeepEqual(got, want) {
+		t.Errorf("decode = %v, %v; want %v, true", got, ok, want)
 	}
 }
 
-func TestRowShowsTheRemoteItWouldSyncThrough(t *testing.T) {
-	// Which remote carries the sync is the first thing that decides whether
-	// ticking this repo does anything, so it is in the row.
-	rows := []scan.Repo{{Rel: "gh", Commits: 3, Remote: "github", RemoteURL: "u"}}
-	m := sized(picker.New(rows, nil))
-	if !strings.Contains(m.View(), "github") {
-		t.Errorf("row should name the remote:\n%s", m.View())
+func TestSavingWithNothingTickedIsNotACancel(t *testing.T) {
+	out := run(t, Config(found("a"), nil), "Save")
+	got, ok := decode(out.Result)
+	if !ok || len(got) != 0 {
+		t.Errorf("decode = %v, %v; want an empty, non-cancelled selection", got, ok)
 	}
 }
 
-func TestARepoWithNoRemoteIsFlagged(t *testing.T) {
-	rows := []scan.Repo{{Rel: "solo", Commits: 3}}
-	m := sized(picker.New(rows, nil))
-	if !strings.Contains(m.View(), "no remote") {
-		t.Errorf("a repo that cannot sync must say why:\n%s", m.View())
+func TestCancelDecodesAsCancelled(t *testing.T) {
+	out := run(t, Config(found("a"), nil), "Cancel")
+	if _, ok := decode(out.Result); ok {
+		t.Error("Cancel must not read as a save")
 	}
-	// Still tickable: `git remote add` is the fix, and the user may be about
-	// to do it. Warning, not a veto.
-	m = apply(t, m, "space")
-	if len(m.Selected()) != 1 {
-		t.Error("a remoteless repo should still be selectable")
+	if _, ok := decode(""); ok {
+		t.Error("quitting with q/esc returns an empty result and must not read as a save")
 	}
 }
 
-func TestSnapshotsAreIndependentAfterUpdate(t *testing.T) {
-	// Model is a value type; Update must not mutate the backing array shared
-	// with a saved copy, or "independent snapshot" semantics silently break.
-	m1 := sized(picker.New(found("notes", "work/api"), nil))
-	m2 := m1
-	m1 = apply(t, m1, "space")
-
-	if got := m1.Selected(); len(got) != 1 || got[0] != "notes" {
-		t.Errorf("m1.Selected() = %v, want [notes]", got)
-	}
-	if got := m2.Selected(); len(got) != 0 {
-		t.Errorf("m2.Selected() = %v, want unaffected by m1's toggle", got)
+func TestPickerIsMultiSelect(t *testing.T) {
+	if !Config(found("a"), nil).MultiSelect {
+		t.Error("choosing repos needs checkboxes")
 	}
 }
 
-func TestMissingRowSaysNotFoundNotNoRemote(t *testing.T) {
-	// A MISSING row has no remote data at all (that info is not in the
-	// selected []string param), so it must not be blamed on a missing
-	// remote - the real reason is it wasn't found on disk this scan.
-	m := sized(picker.New(found("notes"), []string{"notes", "work/gone"}))
-	view := m.View()
-	if strings.Contains(view, "no remote") {
-		t.Errorf("MISSING row should not say 'no remote':\n%s", view)
-	}
-	if !strings.Contains(view, "not found on disk") {
-		t.Errorf("MISSING row should say it wasn't found on disk:\n%s", view)
+func TestEmptyScanWithNothingConfiguredIsAnError(t *testing.T) {
+	_, _, err := choose(func(chicle.Config) (string, error) {
+		t.Fatal("there is nothing to pick, the UI must not open")
+		return "", nil
+	}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "No git repos") {
+		t.Errorf("err = %v, want a message saying no repos were found", err)
 	}
 }
 
-func TestEmptyScanDoesNotPanic(t *testing.T) {
-	m := sized(picker.New(nil, nil))
-	if view := m.View(); !strings.Contains(view, "No git repos") {
-		t.Errorf("empty picker should say so:\n%s", view)
-	}
-	next, _ := m.Update(key("space"))
-	_ = next.(picker.Model).View()
-}
-
-// lineCount is what bubbletea's renderer counts: it splits the view on "\n"
-// and, if the result is taller than the terminal, drops lines off the *top* -
-// taking the title and the highlighted row with them.
-func lineCount(view string) int { return strings.Count(view, "\n") + 1 }
-
-func many(n int) []scan.Repo {
-	rels := make([]string, n)
-	for i := range rels {
-		rels[i] = fmt.Sprintf("repo%02d", i)
-	}
-	return found(rels...)
-}
-
-func shortTerm(m picker.Model) picker.Model {
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 12})
-	return next.(picker.Model)
-}
-
-func TestLongListFitsTheTerminalHeight(t *testing.T) {
-	// Anything taller than the terminal gets its top cut off by the renderer,
-	// so the view has to do its own windowing.
-	m := shortTerm(picker.New(many(40), nil))
-	if got := lineCount(m.View()); got > 12 {
-		t.Errorf("view is %d lines in a 12-line terminal:\n%s", got, m.View())
+func TestChooseReturnsWhatTheUIReturned(t *testing.T) {
+	sel, ok, err := choose(func(cfg chicle.Config) (string, error) {
+		return encode([]string{"b", "a"}), nil
+	}, found("a", "b"), nil)
+	if err != nil || !ok || !reflect.DeepEqual(sel, []string{"a", "b"}) {
+		t.Errorf("choose = %v, %v, %v; want [a b], true, nil", sel, ok, err)
 	}
 }
 
-func TestHighlightStaysVisibleWhileScrolling(t *testing.T) {
-	m := shortTerm(picker.New(many(40), nil))
-	for i := 0; i < 40; i++ {
-		if i > 0 {
-			m = apply(t, m, "down")
-		}
-		view := m.View()
-		want := "> [ ] " + fmt.Sprintf("repo%02d", i)
-		if !strings.Contains(stripANSI(view), want) {
-			t.Fatalf("row %d is highlighted but off screen:\n%s", i, view)
-		}
-		if got := lineCount(view); got > 12 {
-			t.Fatalf("view is %d lines at row %d", got, i)
-		}
+func TestChooseReportsCancel(t *testing.T) {
+	_, ok, err := choose(func(chicle.Config) (string, error) { return "", nil }, found("a"), nil)
+	if err != nil || ok {
+		t.Errorf("ok=%v err=%v, want a clean cancel", ok, err)
 	}
-}
-
-func TestScrolledOffRowsAreCounted(t *testing.T) {
-	m := shortTerm(picker.New(many(40), nil))
-	if view := stripANSI(m.View()); !strings.Contains(view, "more below") {
-		t.Errorf("view should say how many rows are hidden below:\n%s", view)
-	}
-	m = apply(t, m, strings.Split(strings.Repeat("down ", 39), " ")[:39]...)
-	if view := stripANSI(m.View()); !strings.Contains(view, "more above") {
-		t.Errorf("view should say how many rows are hidden above:\n%s", view)
-	}
-}
-
-func TestUnsizedPickerStillRendersEveryRow(t *testing.T) {
-	// No WindowSizeMsg has arrived yet on the very first frame; better to
-	// render the lot than to guess a height and hide rows.
-	m := picker.New(many(40), nil)
-	if got := lineCount(m.View()); got < 40 {
-		t.Errorf("view has %d lines, want every row rendered", got)
-	}
-}
-
-func esc() tea.KeyMsg     { return tea.KeyMsg{Type: tea.KeyEsc} }
-func ctrlW() tea.KeyMsg   { return tea.KeyMsg{Type: tea.KeyCtrlW} }
-func backspc() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyBackspace} }
-
-func send(t *testing.T, m picker.Model, msgs ...tea.KeyMsg) picker.Model {
-	t.Helper()
-	for _, msg := range msgs {
-		next, _ := m.Update(msg)
-		m = next.(picker.Model)
-	}
-	return m
-}
-
-func TestSlashFiltersTheListLive(t *testing.T) {
-	m := sized(picker.New(found("notes", "work/api", "work/web"), nil))
-	m = apply(t, m, "/", "w", "e", "b")
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "work/web") {
-		t.Errorf("filter 'web' should keep work/web:\n%s", view)
-	}
-	if strings.Contains(view, "notes") || strings.Contains(view, "work/api") {
-		t.Errorf("filter 'web' should hide non-matching repos:\n%s", view)
-	}
-}
-
-func TestFilterIsCaseInsensitive(t *testing.T) {
-	m := sized(picker.New(found("Notes", "work/api"), nil))
-	m = apply(t, m, "/", "N", "O")
-	if view := stripANSI(m.View()); !strings.Contains(view, "Notes") {
-		t.Errorf("uppercase query should still match:\n%s", view)
-	}
-}
-
-func TestToggleWhileFilteredTicksTheRightRepo(t *testing.T) {
-	// Filtering must not confuse which row the cursor toggles: space on a
-	// filtered list ticks the visible repo, not whatever was at that index
-	// in the full list.
-	m := sized(picker.New(found("notes", "work/api", "work/web"), nil))
-	m = apply(t, m, "/", "a", "p", "i") // narrows to work/api
-	m = send(t, m, tea.KeyMsg{Type: tea.KeySpace})
-	if got := m.Selected(); len(got) != 1 || got[0] != "work/api" {
-		t.Errorf("Selected() = %v, want [work/api] ticked through the filter", got)
-	}
-}
-
-func TestEscLeavesFilteringAndRestoresFullList(t *testing.T) {
-	m := sized(picker.New(found("notes", "work/api"), nil))
-	m = apply(t, m, "/", "n", "o", "t")
-	m = send(t, m, esc())
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "notes") || !strings.Contains(view, "work/api") {
-		t.Errorf("esc should restore the full list:\n%s", view)
-	}
-	// And a subsequent esc cancels the picker, as it always did.
-	m = send(t, m, esc())
-	if !m.Cancelled() {
-		t.Error("esc outside filtering should cancel the picker")
-	}
-}
-
-func TestCtrlWWipesTheQueryButStaysFiltering(t *testing.T) {
-	m := sized(picker.New(found("notes", "work/api"), nil))
-	m = apply(t, m, "/", "n", "o")
-	m = send(t, m, ctrlW())
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "notes") || !strings.Contains(view, "work/api") {
-		t.Errorf("ctrl+w should clear the query and show everything:\n%s", view)
-	}
-	// Still in filtering mode: a rune edits the query rather than acting as a
-	// command, so typing narrows again.
-	m = apply(t, m, "a", "p", "i")
-	if v := stripANSI(m.View()); strings.Contains(v, "notes") {
-		t.Errorf("still filtering after ctrl+w; typing should narrow:\n%s", v)
-	}
-}
-
-func TestBackspaceEditsTheQuery(t *testing.T) {
-	m := sized(picker.New(found("notes", "work/api"), nil))
-	m = apply(t, m, "/", "n", "o", "z") // 'noz' matches nothing
-	if v := stripANSI(m.View()); !strings.Contains(v, "no repos match") {
-		t.Errorf("'noz' should match nothing:\n%s", v)
-	}
-	m = send(t, m, backspc()) // back to 'no'
-	if v := stripANSI(m.View()); !strings.Contains(v, "notes") {
-		t.Errorf("backspace should widen back to matching notes:\n%s", v)
-	}
-}
-
-func TestFilterDoesNotDropSelectionsOutsideTheQuery(t *testing.T) {
-	// Ticking a repo, then filtering it out of view, must not lose the tick -
-	// the result is written to config.toml.
-	m := sized(picker.New(found("notes", "work/api"), nil))
-	m = apply(t, m, "space")                       // tick notes
-	m = apply(t, m, "/", "a", "p", "i")            // filter to work/api, hiding notes
-	m = send(t, m, tea.KeyMsg{Type: tea.KeySpace}) // tick work/api too
-	m = send(t, m, esc())
-	sel := m.Selected()
-	if len(sel) != 2 || sel[0] != "notes" || sel[1] != "work/api" {
-		t.Errorf("Selected() = %v, want both kept despite filtering", sel)
-	}
-}
-
-func TestEnterWhileFilteringSaves(t *testing.T) {
-	m := sized(picker.New(found("notes", "work/api"), nil))
-	m = apply(t, m, "/", "n", "o")
-	next, cmd := m.Update(key("enter"))
-	m = next.(picker.Model)
-	if !m.Confirmed() {
-		t.Error("enter while filtering should save")
-	}
-	if cmd == nil {
-		t.Error("enter should quit the program")
-	}
-}
-
-func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
-
-var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
-
-func apply(t *testing.T, m picker.Model, keys ...string) picker.Model {
-	t.Helper()
-	for _, k := range keys {
-		next, _ := m.Update(key(k))
-		m = next.(picker.Model)
-	}
-	return m
 }

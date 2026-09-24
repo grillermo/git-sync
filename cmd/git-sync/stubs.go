@@ -301,15 +301,11 @@ func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) (
 			"no terminal for the repo picker: pass --all or --repos a,b,c")
 	}
 
-	final, runErr := tea.NewProgram(picker.New(discovered, current)).Run()
-	if runErr != nil {
-		return nil, runErr
+	repos, ok, err := picker.Choose(discovered, current)
+	if err != nil || !ok {
+		return nil, err
 	}
-	m, ok := final.(picker.Model)
-	if !ok || m.Cancelled() {
-		return nil, nil
-	}
-	return m.Selected(), nil
+	return repos, nil
 }
 
 // isTTY reports whether w is an *os.File connected to a terminal.
