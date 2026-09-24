@@ -1,5 +1,11 @@
 # git-sync: Design
 
+> **Superseded in part** by
+> `2026-09-23-multi-machine-sync-design.md`, which replaces the two-machine
+> peer pair with an N-machine mesh and removes SSH password support. The
+> remote-as-transport model, the repo allowlist and the receive algorithm
+> described here still hold.
+
 ## Goal
 
 Keep a chosen set of git repos in sync between two machines (A and B)
