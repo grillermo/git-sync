@@ -1,7 +1,7 @@
 .PHONY: build test lint check install
 
 build:
-	go build -o git-sync ./cmd/git-sync
+	./build
 
 test:
 	go test ./...

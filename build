@@ -1,0 +1,5 @@
+#!/bin/sh
+# Build the git-sync binary into ./git-sync.
+set -e
+cd "$(dirname "$0")"
+go build -o git-sync ./cmd/git-sync
