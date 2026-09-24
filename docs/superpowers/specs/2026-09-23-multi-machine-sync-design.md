@@ -286,3 +286,17 @@ entries and minus "uninstall is local only". Added:
   lands; the result is the existing diverged report, not corruption.
 - **Provisioning still copies the binary verbatim**, so every machine in the
   mesh must share an OS and architecture.
+- **Initial sync blocks a whole repo, not just the problem peer.** `blocked()`
+  excludes a repo from initial sync across the *entire* mesh if even one peer
+  has diverged history, is on a different branch, or reported an error for
+  it - rather than excluding just that peer and still levelling the others.
+  A repo that isn't level across the whole mesh because ONE peer has
+  diverged history, a different branch, or reported an error is not levelled
+  between the OTHER machines either, even though they might otherwise be
+  levelable - the whole repo is left for the user to sort out that one peer
+  by hand first. This is conservative, not unsafe: nothing is force-pushed
+  and no bad merge happens, the repo just stays unlevelled until the problem
+  peer is fixed. Deliberately not fixed alongside the review that found it -
+  it touches the same initial-sync algorithm that got the most careful
+  review in this branch, and that kind of algorithm change deserves its own
+  dedicated task.

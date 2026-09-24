@@ -17,9 +17,10 @@ func TestCheckKeysProbesEveryOrderedPair(t *testing.T) {
 	peers := []config.Peer{{Host: "b.local", User: "t"}, {Host: "c.local", User: "t"}}
 
 	results := setup.CheckKeys(self, peers)
-	// a->b, a->c, b->c, c->b: four ordered pairs, and never a self-pair.
-	if len(results) != 4 {
-		t.Fatalf("got %d results, want 4: %+v", len(results), results)
+	// a->b, a->c, b->c, c->b, b->a, c->a: six ordered pairs (every pair among
+	// {a,b,c} in both directions), and never a self-pair.
+	if len(results) != 6 {
+		t.Fatalf("got %d results, want 6: %+v", len(results), results)
 	}
 	for _, r := range results {
 		if r.From.Host == r.To.Host {

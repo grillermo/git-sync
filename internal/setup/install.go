@@ -129,8 +129,14 @@ func Install(o Options) error {
 
 	// Provision every machine in the mesh. One peer being unreachable is a
 	// warning, not a reason to abandon the others - each gets its own
-	// independent attempt and its own report.
+	// independent attempt and its own report. A real provisioning failure
+	// (e.g. an architecture mismatch) is the same: it must not stop later
+	// peers from being provisioned, and it must not skip the initial-sync
+	// stage for the peers that did succeed - this machine's own config
+	// already lists every peer, so it will keep trying to notify an
+	// unprovisioned one forever if we bail out here.
 	var anyUnreachable bool
+	var failed []string
 	for _, p := range cfg.PeerList() {
 		override := p.BaseDir
 		if override == "" {
@@ -149,12 +155,18 @@ func Install(o Options) error {
 			fmt.Fprintf(o.Out, "WARNING: peer %s not provisioned: unreachable.\n", p.Host)
 			anyUnreachable = true
 		default:
-			return fmt.Errorf("provisioning %s: %w", p.Host, err)
+			fmt.Fprintf(o.Out, "WARNING: peer %s not provisioned: %v\n", p.Host, err)
+			failed = append(failed, p.Host)
 		}
 	}
-	if anyUnreachable {
+	switch {
+	case len(failed) > 0:
+		fmt.Fprintln(o.Out, "This machine is set up. Fix the errors above and re-run install to finish provisioning.")
+		return fmt.Errorf("failed to provision %d of %d peer(s): %s",
+			len(failed), len(cfg.PeerList()), strings.Join(failed, ", "))
+	case anyUnreachable:
 		fmt.Fprintln(o.Out, "This machine is set up. Re-run install once every peer is up.")
-	} else {
+	default:
 		fmt.Fprintln(o.Out, "done. Every machine is set up.")
 	}
 	return nil

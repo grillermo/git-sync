@@ -161,6 +161,26 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Step 6: this machine's own identity is what every peer will use to
+	// notify us back - config.Peer{Host: selfHost, User: selfUser, BaseDir:
+	// cfg.BaseDir} gets marshalled into every peer's config.toml, and
+	// Peer.Validate (run inside peerListFor/MarshalFor) silently drops it if
+	// it fails - an unset $USER, or a --self-host/--self-user/base_dir
+	// with a shell-unsafe character. That would leave every peer unable to
+	// ever notify this machine again, with no error anywhere. Validate it
+	// here, before anything is written to a peer, so a bad identity fails
+	// the install instead of failing silently forever.
+	if !*noPeer {
+		self := config.Peer{Host: resolveSelfHost(*selfHost), User: resolveSelfUser(*selfUser), BaseDir: base}
+		if err := self.Validate(); err != nil {
+			fmt.Fprintln(stderr, "this machine's own identity is invalid for mesh notifications:", err)
+			fmt.Fprintln(stderr, "every peer would be provisioned with a self entry it silently drops, "+
+				"leaving them unable to ever notify this machine back; fix --self-host/--self-user "+
+				"(or $USER) and re-run install")
+			return 1
+		}
+	}
+
 	fmt.Fprintln(stdout, "installing")
 	if err := setup.Install(setup.Options{
 		BaseDir: fs.Arg(0), Peers: peers, Repos: repos,

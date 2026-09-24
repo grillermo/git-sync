@@ -1,4 +1,5 @@
-// Command git-sync keeps git repositories in sync between two machines.
+// Command git-sync keeps git repositories in sync across a mesh of two or
+// more machines.
 package main
 
 import (
@@ -7,13 +8,13 @@ import (
 	"os"
 )
 
-const usage = `git-sync keeps git repos in sync between two machines.
+const usage = `git-sync keeps git repos in sync between two or more machines.
 
 Usage:
-  git-sync install <base_dir>   pick repos under base_dir and set up both machines
-  git-sync uninstall [--purge]  stop syncing (--purge also deletes config and history)
-  git-sync report [flags]       browse sync activity, grouped by repo
-  git-sync unlock [<repo>]      clear a stuck sync lock (default: this repo)
+  git-sync install <base_dir>          pick repos under base_dir and set up every machine in the mesh
+  git-sync uninstall [--purge] [--local]  stop syncing (mesh-wide by default; --local limits it to this machine; --purge also deletes config and history)
+  git-sync report [flags]              browse sync activity, grouped by repo
+  git-sync unlock [<repo>]             clear a stuck sync lock (default: this repo)
 
 Run a command with -h for its flags.
 `

@@ -185,6 +185,51 @@ func TestInstallReplacesTheAllowlistOnRerun(t *testing.T) {
 	}
 }
 
+func TestInstallProvisionsRemainingPeersAfterOneFailsWithARealError(t *testing.T) {
+	// A platform mismatch (or any other non-unreachable provisioning error)
+	// on one peer must not stop the loop from reaching the others, and must
+	// surface as a summary error rather than aborting mid-loop.
+	sb := testutil.NewSandbox(t)
+	sb.StubSSHScripted(map[string]string{
+		"*bad.example*uname*":  "printf '%s' 'Linux x86_64-definitely-not-ours'",
+		"*good.example*uname*": "printf '%s' '" + localUname() + "'",
+		"$HOME":                "/home/peer",
+	}, 0)
+	self := testutil.WriteScript(t, sb, "git-sync-fake", "#!/bin/sh\nexit 0\n")
+
+	var out strings.Builder
+	err := setup.Install(setup.Options{
+		BaseDir: sb.BaseDir,
+		Peers: []config.Peer{
+			{Host: "bad.example", User: "u"},
+			{Host: "good.example", User: "u"},
+		},
+		Self: self, Repos: []string{"proj"}, Out: &out,
+	})
+	if err == nil {
+		t.Fatal("expected a summary error naming the peer that failed to provision")
+	}
+	if !strings.Contains(err.Error(), "bad.example") && !strings.Contains(out.String(), "bad.example") {
+		t.Errorf("the failure should name bad.example somewhere; err=%v out=%s", err, out.String())
+	}
+
+	calls := sb.SSHCalls()
+	for _, line := range strings.Split(calls, "\n") {
+		if strings.Contains(line, "bad.example") && strings.Contains(line, "config.toml") {
+			t.Errorf("bad.example should never get config.toml written after a platform mismatch: %s", line)
+		}
+	}
+	var goodGotConfig bool
+	for _, line := range strings.Split(calls, "\n") {
+		if strings.Contains(line, "good.example") && strings.Contains(line, "config.toml") {
+			goodGotConfig = true
+		}
+	}
+	if !goodGotConfig {
+		t.Errorf("good.example should still have been provisioned despite bad.example failing:\n%s", calls)
+	}
+}
+
 func TestUninstallRemovesTheHookButKeepsHistory(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	sb.StubSSH(0)

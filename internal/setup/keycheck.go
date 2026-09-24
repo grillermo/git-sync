@@ -45,6 +45,19 @@ func CheckKeys(self config.Peer, peers []config.Peer) []KeyResult {
 			}))
 		}
 	}
+	// peer -> self: the direction most likely to actually be broken on a
+	// fresh setup. This machine can obviously reach every peer, since it
+	// just provisioned them, but a peer often has no key back to the
+	// machine that provisioned it. `from` ranges over peers, never self, so
+	// this can never produce a self-pair.
+	for _, from := range peers {
+		out = append(out, probeKey(from, self, func(to config.Peer) error {
+			// Run the check *on* `from`, targeting `self`.
+			return ssh(from.Target(), fmt.Sprintf(
+				"%s\nssh -o BatchMode=yes -o ConnectTimeout=5 %s true",
+				keyCheckMarker, to.Target()))
+		}))
+	}
 	return out
 }
 

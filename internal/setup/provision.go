@@ -115,6 +115,13 @@ func ProvisionPeer(o PeerOptions) error {
 	fmt.Fprintf(o.Out, "provisioned %s: %d repos, base_dir %s\n",
 		o.Peer.Host, len(o.Cfg.Repos), peerCfg.BaseDir)
 	fmt.Fprintf(o.Out, "  the peer will reach back at %s@%s\n", o.SelfUser, o.SelfHost)
+	// peerCfg.Peers above REPLACES whatever config.toml already sat on the
+	// peer - it is never read and merged first. If that peer had its own
+	// peers (added there, or by a third machine's install), this write
+	// drops them silently unless we say so here.
+	fmt.Fprintf(o.Out, "  NOTE: this replaces %s's peer list with this machine's current view of the "+
+		"mesh (%d peer(s)); it does not merge with whatever %s already had configured.\n",
+		o.Peer.Host, len(peerCfg.Peers), o.Peer.Host)
 
 	return nil
 }

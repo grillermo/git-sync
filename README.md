@@ -77,9 +77,13 @@ Flags:
 | `--self-user` | the account peers should SSH back into |
 | `--peer-base-dir` | base_dir override for `--peer-host`/`--peer-user` (use `user@host:base_dir` with `--peer` instead) |
 
-Re-running `install` adds to the existing mesh rather than replacing it: any
-peers already configured are kept alongside whatever new `--peer` flags you
-pass.
+Re-running `install` adds to the existing mesh rather than replacing it - but
+only on the machine you run it on: it merges its own existing peer list with
+whatever new `--peer` flags you pass. Each *peer* it then provisions gets its
+config.toml **replaced** with that merged list, not merged with whatever
+peers that peer's config already had - so re-provisioning a peer from a new
+machine can silently drop a peer it already knew about. `install` prints a
+warning naming this when it re-provisions an already-configured peer.
 
 ## Prerequisites
 
