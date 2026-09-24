@@ -192,15 +192,13 @@ func MeasureSync(cfg config.Config, peers []PeerTarget, repos []string) ([]RepoS
 					pos = p
 				} else {
 					// The remote script emits exactly one line per repo it was
-					// asked about, so this should never happen for real. Assume
-					// nothing has changed rather than block the whole mesh on one
-					// unreadable answer - ApplySync's own re-measure, or the next
-					// commit, will pick up the truth once the peer replies
-					// properly. A genuine problem (wrong branch, no such repo,
-					// diverged) always arrives as an explicit line, never as
-					// silence.
-					pos = SyncPos{Branch: out[i].Here.Branch, Remote: out[i].Here.Remote,
-						Note: "did not report on this repo"}
+					// asked about, so this should never happen for real - but
+					// silence here must never be read as "level". A peer that
+					// drops a repo (rev-list failed, a malformed line got
+					// discarded by parseSyncPositions, ...) has to block that
+					// repo, the same as any other unreadable answer, so it shows
+					// up as a real warning instead of quietly looking synced.
+					pos = SyncPos{Err: "the peer did not report on this repo"}
 				}
 			}
 			out[i].There = append(out[i].There, PeerPos{Peer: pt.Peer, Pos: pos})

@@ -389,8 +389,14 @@ func TestApplySyncPushesTheFirstMachineThatIsAhead(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	repo := sb.MakeRepo("group/proj")
 	testutil.Commit(t, sb, repo, "only here")
-	// Two peers, both level with the remote and both behind us.
-	sb.StubSSHScripted(map[string]string{"*": "true"}, 0)
+	// Two peers, both level with the remote and both behind us. Replies with
+	// a real "pos" line rather than a bare success exit: MeasureSync now
+	// treats a peer reply with no line for a repo as blocked, not level, so
+	// the stub has to answer for real or this test would no longer exercise
+	// the "purely ahead, push" path it is named for.
+	sb.StubSSHScripted(map[string]string{
+		"git-sync-initial-sync": "pos group/proj main origin 0 0\n",
+	}, 0)
 	cfg := config.Config{BaseDir: sb.BaseDir, Repos: []string{"group/proj"}, Peers: []config.Peer{
 		{Host: "b.local", User: "t"}, {Host: "c.local", User: "t"},
 	}}
