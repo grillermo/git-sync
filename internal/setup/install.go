@@ -70,6 +70,13 @@ func Install(o Options) error {
 		}
 	}
 
+	// Per-platform builds sit beside the binary this was run from (bin/ in the
+	// repo), not beside the installed copy.
+	var builds string
+	if resolved, err := filepath.EvalSymlinks(self); err == nil {
+		builds = filepath.Dir(resolved)
+	}
+
 	for _, d := range []string{config.Home(), config.HooksDir(), config.LocksDir(), filepath.Dir(config.BinPath())} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
@@ -144,7 +151,7 @@ func Install(o Options) error {
 		}
 		err := ProvisionPeer(PeerOptions{
 			Cfg: cfg, Peer: p,
-			Self: config.BinPath(), SelfHost: selfHost, SelfUser: selfUser,
+			Self: config.BinPath(), Builds: builds, SelfHost: selfHost, SelfUser: selfUser,
 			PeerBaseDir: override, Out: o.Out,
 		})
 		switch {

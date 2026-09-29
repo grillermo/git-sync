@@ -36,7 +36,7 @@ task-by-task implementation plans are the correspondingly-named files under
 ## Commands
 
 ```bash
-make build          # go build -o git-sync ./cmd/git-sync
+make build          # ./build: bin/git-sync-<os>-<arch> for all four targets; bin/git-sync -> this machine's
 make test           # go test ./...
 make lint           # go vet ./... && gofmt -l .
 make check          # lint + test — run this before considering anything done
@@ -176,7 +176,11 @@ Package layering, leaves to composition:
   `post-commit`/`pre-commit`/`pre-push` hook shims, sets `core.hooksPath`),
   `provision.go` (pushes binary/config/hook to one peer over ssh, given that
   peer's own `Options.Peers` list, idempotently — called once per machine in
-  the mesh), `repocheck.go` (asks each reachable peer which selected repos it
+  the mesh; `binaryFor` sends this machine's binary to a same-platform peer,
+  else the `git-sync-<os>-<arch>` build from `PeerOptions.Builds`, the
+  directory `./build` filled next to the binary `install` was run from — it
+  never cross-compiles, and a missing build is an error naming the `./build`
+  target to run), `repocheck.go` (asks each reachable peer which selected repos it
   actually has, and whether they point at the same remote — a mismatched
   pair silently never converges otherwise), `keycheck.go` (`CheckKeys` probes
   every *ordered pair* of machines in the mesh, not just this machine to each

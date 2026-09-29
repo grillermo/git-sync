@@ -92,8 +92,11 @@ warning naming this when it re-provisions an already-configured peer.
   path has a terminal that could answer a prompt from a detached hook.
   `install`'s connect stage checks every pair and tells you exactly which
   ones need `ssh-copy-id`.
-- All machines on the same OS and architecture - the binary is copied
-  verbatim.
+- Peers on macOS or Linux, arm64 or amd64. `./build` produces
+  `bin/git-sync-<os>-<arch>` for all four (or `./build linux/amd64` for one),
+  and `install` sends each peer the build matching its platform. Run it from
+  `bin/git-sync` so it can find the other builds next to it; a missing build
+  is reported with the exact `./build` command to make it.
 - The same repo cloned on every machine at the same path *relative to
   `base_dir`* **and from the same remote**. Two clones of different
   repositories at the same path never converge, which is why install

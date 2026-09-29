@@ -18,7 +18,8 @@ import (
 type PeerOptions struct {
 	Cfg         config.Config // this machine's config; Repos is copied verbatim
 	Peer        config.Peer   // the machine being provisioned
-	Self        string        // path to the binary to send
+	Self        string        // this machine's binary, sent to a peer on the same platform
+	Builds      string        // directory holding git-sync-<os>-<arch> builds for other platforms
 	SelfHost    string        // this machine's hostname, as the peer sees it
 	SelfUser    string        // the account the peer should ssh back into
 	PeerBaseDir string        // overrides the derived peer base_dir
@@ -39,14 +40,15 @@ func ProvisionPeer(o PeerOptions) error {
 	}
 	target := o.Peer.Target()
 
-	// 1-2. The binary is copied verbatim, so a mismatched peer could never run
-	//      it; and every path we write must be absolute, which needs the peer's
+	// 1-2. The binary is copied verbatim, so it must match the peer's platform;
+	//      and every path we write must be absolute, which needs the peer's
 	//      home. Both are answered before anything is written.
 	probe, err := Probe(target)
 	if err != nil {
 		return err
 	}
-	if err := checkSamePlatform(probe.Uname); err != nil {
+	binPath, err := o.binaryFor(probe.Uname)
+	if err != nil {
 		return err
 	}
 	peerHome := probe.Home
@@ -60,7 +62,7 @@ func ProvisionPeer(o PeerOptions) error {
 
 	// 4. The binary, written then renamed so a commit running on the peer
 	//    never executes a half-copied file.
-	bin, err := os.Open(o.Self)
+	bin, err := os.Open(binPath)
 	if err != nil {
 		return err
 	}
@@ -199,33 +201,56 @@ func Probe(target string) (PeerProbe, error) {
 // the provisioning cannot disagree about it.
 func Target(c config.Config) string { return c.PeerUser + "@" + c.PeerHost }
 
-func checkSamePlatform(uname string) error {
+// binaryFor picks the binary to send to a peer whose `uname -sm` is uname:
+// this machine's own binary when the platforms match, otherwise the
+// git-sync-<os>-<arch> build that ./build left next to it. Nothing is
+// cross-compiled here; a missing build is an error that says how to make it.
+func (o PeerOptions) binaryFor(uname string) (string, error) {
 	fields := strings.Fields(strings.TrimSpace(uname))
 	if len(fields) < 2 {
-		return fmt.Errorf("could not read the peer's platform from %q", uname)
+		return "", fmt.Errorf("could not read the peer's platform from %q", uname)
 	}
-	wantOS, wantArch := unameOS(), unameArch()
-	if !strings.EqualFold(fields[0], wantOS) || fields[1] != wantArch {
-		return fmt.Errorf(
-			"peer is %s %s but this machine is %s %s; the binary is copied verbatim, "+
-				"so install git-sync on the peer by hand with a matching build",
-			fields[0], fields[1], wantOS, wantArch)
+	goos, goarch, ok := goPlatform(fields[0], fields[1])
+	if !ok {
+		return "", fmt.Errorf("peer platform %s %s is not supported (darwin or linux, on arm64 or amd64)",
+			fields[0], fields[1])
 	}
-	return nil
+	if goos == runtime.GOOS && goarch == runtime.GOARCH {
+		return o.Self, nil
+	}
+	name := fmt.Sprintf("git-sync-%s-%s", goos, goarch)
+	path := filepath.Join(o.Builds, name)
+	if o.Builds == "" {
+		return "", fmt.Errorf("peer is %s/%s but this machine is %s/%s, and there is no build directory to look in; "+
+			"run ./build for that target and install from the repo's bin/git-sync",
+			goos, goarch, runtime.GOOS, runtime.GOARCH)
+	}
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("peer is %s/%s but %s does not exist; build it with: ./build %s/%s",
+			goos, goarch, path, goos, goarch)
+	}
+	return path, nil
 }
 
-func unameOS() string {
-	if runtime.GOOS == "darwin" {
-		return "Darwin"
+// goPlatform translates `uname -s` / `uname -m` into GOOS / GOARCH.
+func goPlatform(sys, machine string) (goos, goarch string, ok bool) {
+	switch strings.ToLower(sys) {
+	case "darwin":
+		goos = "darwin"
+	case "linux":
+		goos = "linux"
+	default:
+		return "", "", false
 	}
-	return "Linux"
-}
-
-func unameArch() string {
-	if runtime.GOARCH == "amd64" {
-		return "x86_64"
+	switch machine {
+	case "arm64", "aarch64":
+		goarch = "arm64"
+	case "x86_64", "amd64":
+		goarch = "amd64"
+	default:
+		return "", "", false
 	}
-	return runtime.GOARCH // arm64 prints as arm64 on both platforms
+	return goos, goarch, true
 }
 
 func ssh(target, remote string) error {

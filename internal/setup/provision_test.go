@@ -451,3 +451,52 @@ func TestRenderRepoChecksExplainsTheConsequence(t *testing.T) {
 		t.Errorf("report should say it will not sync and that cloning fixes it:\n%s", s)
 	}
 }
+
+// foreignPlatform is a supported peer platform that differs from the one
+// running the test: its uname string and the build file name it needs.
+func foreignPlatform() (uname, build string) {
+	if runtime.GOOS == "linux" && runtime.GOARCH == "amd64" {
+		return "Darwin arm64", "git-sync-darwin-arm64"
+	}
+	return "Linux x86_64", "git-sync-linux-amd64"
+}
+
+func TestProvisionSendsThePeersPlatformBuild(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	uname, build := foreignPlatform()
+	sb.StubSSHScripted(map[string]string{"uname": uname, "$HOME": "/home/peer"}, 0)
+	builds := t.TempDir()
+	if err := os.WriteFile(builds+"/"+build, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := setup.ProvisionPeer(setup.PeerOptions{
+		Cfg:  config.Config{BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester"},
+		Self: testutil.WriteScript(t, sb, "fake", "#!/bin/sh\n"), Builds: builds,
+		SelfHost: "a.local", Out: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("ProvisionPeer: %v", err)
+	}
+	if !strings.Contains(sb.SSHCalls(), "/home/peer/.gitsync/bin/git-sync") {
+		t.Errorf("binary was never sent:\n%s", sb.SSHCalls())
+	}
+}
+
+func TestProvisionNamesTheMissingBuildAndWritesNothing(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	uname, build := foreignPlatform()
+	sb.StubSSHScripted(map[string]string{"uname": uname, "$HOME": "/home/peer"}, 0)
+
+	err := setup.ProvisionPeer(setup.PeerOptions{
+		Cfg:  config.Config{BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester"},
+		Self: testutil.WriteScript(t, sb, "fake", "#!/bin/sh\n"), Builds: t.TempDir(),
+		SelfHost: "a.local", Out: io.Discard,
+	})
+	if err == nil || !strings.Contains(err.Error(), build) || !strings.Contains(err.Error(), "./build") {
+		t.Fatalf("want an error naming %s and ./build, got %v", build, err)
+	}
+	if strings.Contains(sb.SSHCalls(), "mkdir") {
+		t.Errorf("nothing should be written to the peer:\n%s", sb.SSHCalls())
+	}
+}
