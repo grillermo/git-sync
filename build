@@ -1,5 +1,34 @@
 #!/bin/sh
-# Build the git-sync binary into ./git-sync.
-set -e
+# Builds git-sync into bin/git-sync-<os>-<arch> and points bin/git-sync at it.
+# Each machine builds its own; see bin/.gitignore.
+set -eu
 cd "$(dirname "$0")"
-go build -o git-sync ./cmd/git-sync
+name=git-sync
+
+# --- platform: build for this machine's real OS and CPU ------------------
+case "$(uname -s)" in
+  Darwin) GOOS=darwin ;;
+  Linux)  GOOS=linux ;;
+  *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+  arm64|aarch64) GOARCH=arm64 ;;
+  x86_64|amd64)  GOARCH=amd64 ;;
+  *) echo "unsupported CPU: $(uname -m)" >&2; exit 1 ;;
+esac
+# A shell under Rosetta reports x86_64 on Apple Silicon; build for the real CPU.
+if [ "$GOOS" = darwin ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ]; then
+  GOARCH=arm64
+fi
+export GOOS GOARCH CGO_ENABLED=0     # no program here uses cgo
+# -------------------------------------------------------------------------
+
+out="bin/$name-$GOOS-$GOARCH"
+go build -trimpath -o "$out" ./cmd/git-sync
+
+# Prove what was built: go version -m reads the settings embedded in the binary.
+built=$(go version -m "$out" | awk -F'\t' '$2=="build" && $3 ~ /^GO(OS|ARCH)=/ {sub(/^GO(OS|ARCH)=/,"",$3); printf "%s ", $3}')
+[ "$built" = "$GOARCH $GOOS " ] || { echo "built $built, wanted $GOOS/$GOARCH" >&2; exit 1; }
+
+ln -sfn "$name-$GOOS-$GOARCH" "bin/$name"      # relative, so the repo can move
+echo "built $(pwd)/$out for $GOOS/$GOARCH"

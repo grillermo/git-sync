@@ -1,0 +1,4 @@
+# Per-platform build output: <name>-<os>-<arch>, and <name> -> this machine's build.
+# Each machine builds its own; binaries never go into git.
+*
+!.gitignore

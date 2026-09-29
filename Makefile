@@ -13,4 +13,4 @@ lint:
 check: lint test
 
 install: build
-	./git-sync install $(BASE_DIR)
+	./bin/git-sync install $(BASE_DIR)
