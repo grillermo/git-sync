@@ -121,7 +121,8 @@ func choosePeers(run func(chicle.Config) (string, error), found <-chan discovery
 // one of its addresses.
 func isPeer(h discovery.Host, current []config.Peer) bool {
 	for _, p := range current {
-		if strings.EqualFold(p.Host, h.Host) || slices.Contains(h.Addrs, p.Host) {
+		if strings.EqualFold(p.Host, h.Host) || slices.Contains(h.Addrs, p.Host) ||
+			(h.Hostname != "" && strings.EqualFold(p.Host, h.Hostname)) {
 			return true
 		}
 	}

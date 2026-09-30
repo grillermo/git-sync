@@ -28,8 +28,15 @@ type Host struct {
 	// Name is what the machine calls itself (the Bonjour instance name), or
 	// the address when all we have is a port-scan hit.
 	Name string
-	// Host is what to ssh to: a .local name from Bonjour, else an IPv4.
+	// Host is what to ssh to: always an IPv4, never a name. A .local name
+	// only resolves where mDNS works, and ssh keys known_hosts on whatever
+	// was typed - a machine trusted as 192.168.1.4 still fails as
+	// mini.local. An address that answered the port-22 sweep wins over one
+	// Bonjour only advertised.
 	Host string
+	// Hostname is the .local name Bonjour gave, for display and for matching
+	// a peer configured by name. Never an ssh target.
+	Hostname string
 	// Addrs are the IPv4s known to belong to Host. A port-scan hit whose IP
 	// is in here is the same machine, not a second one.
 	Addrs   []string
@@ -48,6 +55,9 @@ func (h Host) Bonjour() bool { return slices.Contains(h.Sources, SourceBonjour) 
 func (h *Host) merge(newer Host) {
 	if newer.Name != "" && newer.Name != newer.Host {
 		h.Name = newer.Name
+	}
+	if newer.Hostname != "" {
+		h.Hostname = newer.Hostname
 	}
 	for _, s := range newer.Sources {
 		if !slices.Contains(h.Sources, s) {
@@ -89,11 +99,7 @@ func (s *Set) Add(h Host) bool {
 		merged := before
 		merged.Addrs = slices.Clone(before.Addrs)
 		merged.Sources = slices.Clone(before.Sources)
-		// A Bonjour name is what the user should see and ssh to; a bare IP
-		// only stands in until one turns up.
-		if h.Bonjour() && !merged.Bonjour() {
-			merged.Host = h.Host
-		}
+		takeScanned(&merged, h)
 		merged.merge(h)
 		s.hosts[i] = merged
 		s.absorbAddresses(i)
@@ -118,7 +124,8 @@ func (s *Set) List() []Host {
 // ssh target, or an address either side already knows about.
 func (s *Set) find(h Host) int {
 	for i, have := range s.hosts {
-		if strings.EqualFold(have.Host, h.Host) {
+		if strings.EqualFold(have.Host, h.Host) ||
+			(h.Hostname != "" && strings.EqualFold(have.Hostname, h.Hostname)) {
 			return i
 		}
 		for _, a := range h.Addrs {
@@ -138,19 +145,30 @@ func (s *Set) find(h Host) int {
 func (s *Set) absorbAddresses(i int) {
 	keep := s.hosts[:0:0]
 	target := s.hosts[i]
+	was := target.Host
 	for j, other := range s.hosts {
 		if j != i && !other.Bonjour() && slices.Contains(target.Addrs, other.Host) {
+			takeScanned(&target, other)
 			target.merge(other)
 			continue
 		}
 		keep = append(keep, other)
 	}
 	for k := range keep {
-		if strings.EqualFold(keep[k].Host, target.Host) {
+		if strings.EqualFold(keep[k].Host, was) {
 			keep[k] = target
 		}
 	}
 	s.hosts = keep
+}
+
+// takeScanned makes a port-scan hit's address h's ssh target, unless an
+// earlier hit already did: that address has been seen answering ssh, where a
+// Bonjour A record only says the machine has it. Call before merging hit in.
+func takeScanned(h *Host, hit Host) {
+	if !hit.Bonjour() && !slices.Contains(h.Sources, SourcePortScan) {
+		h.Host = hit.Host
+	}
 }
 
 func (s *Set) sort() {
@@ -169,6 +187,6 @@ func (s *Set) sort() {
 }
 
 func equal(a, b Host) bool {
-	return a.Name == b.Name && a.Host == b.Host && a.Latency == b.Latency &&
+	return a.Name == b.Name && a.Host == b.Host && a.Hostname == b.Hostname && a.Latency == b.Latency &&
 		slices.Equal(a.Addrs, b.Addrs) && slices.Equal(a.Sources, b.Sources)
 }

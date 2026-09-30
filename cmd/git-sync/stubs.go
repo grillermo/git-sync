@@ -370,15 +370,11 @@ func confirmYes(w io.Writer, r io.Reader, question string) bool {
 	return sc.Scan() && strings.EqualFold(strings.TrimSpace(sc.Text()), "yes")
 }
 
-// resolveSelfHost is the hostname install tells a peer to reach this machine
+// resolveSelfHost is the address install tells a peer to reach this machine
 // back on, mirroring setup.Install's own default so the key check asks about
 // exactly the same identity install will provision.
 func resolveSelfHost(flagVal string) string {
-	if flagVal != "" {
-		return flagVal
-	}
-	h, _ := os.Hostname()
-	return h
+	return setup.SelfHost(flagVal)
 }
 
 // resolveSelfUser mirrors resolveSelfHost for the account the peer ssh's

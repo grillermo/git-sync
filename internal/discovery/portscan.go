@@ -23,6 +23,18 @@ const (
 // the real netmask says.
 const maxCandidates = 254
 
+// LocalIP is this machine's address on the network the sweep covers - what a
+// peer on it should ssh back to. ok is false with no usable IPv4 interface.
+func LocalIP() (ip string, ok bool) {
+	addr, _, ok := localSubnet()
+	if !ok {
+		return "", false
+	}
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], addr)
+	return net.IP(b[:]).String(), true
+}
+
 // localSubnet picks the interface to sweep: an up, non-loopback IPv4, keeping
 // the first en* (the built-in Ethernet/Wi-Fi on macOS, and the systemd
 // predictable name on Linux) and otherwise whichever came last.

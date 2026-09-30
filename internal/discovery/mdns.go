@@ -209,9 +209,11 @@ func skip(p *dnsmessage.Parser) error {
 	return errors.New("could not skip resource")
 }
 
-// take returns every instance that now resolves to a host on port 22 and was
-// not already reported with at least this many addresses. Only port 22: a
-// peer is config.Peer{User, Host}, with nowhere to put a port.
+// take returns every instance that now resolves to a host on port 22 with at
+// least one IPv4, and was not already reported with at least this many
+// addresses. Only port 22: a peer is config.Peer{User, Host}, with nowhere to
+// put a port. No address yet means nothing to ssh to - the host is reported
+// once an A record arrives, never by its .local name.
 func (c *mdnsCache) take() []Host {
 	var out []Host
 	for inst := range c.instances {
@@ -221,16 +223,31 @@ func (c *mdnsCache) take() []Host {
 		}
 		target := strings.ToLower(s.target)
 		addrs := c.addrs[target]
+		if len(addrs) == 0 {
+			continue
+		}
 		if n, done := c.reported[inst]; done && n >= len(addrs) {
 			continue
 		}
 		c.reported[inst] = len(addrs)
 		out = append(out, Host{
-			Name: c.names[inst], Host: strings.TrimSuffix(s.target, "."),
+			Name: c.names[inst], Host: bestAddr(addrs), Hostname: strings.TrimSuffix(s.target, "."),
 			Addrs: append([]string(nil), addrs...), Sources: []Source{SourceBonjour},
 		})
 	}
 	return out
+}
+
+// bestAddr picks the address to ssh to from a Bonjour host's A records: the
+// first that is not link-local (169.254/16, a self-assigned address on a
+// cable or bridge rather than the LAN), else the first.
+func bestAddr(addrs []string) string {
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip != nil && !ip.IsLinkLocalUnicast() {
+			return a
+		}
+	}
+	return addrs[0]
 }
 
 // followUps asks for the SRV (and the A records the responder sends with it)

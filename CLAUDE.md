@@ -182,7 +182,12 @@ Package layering, leaves to composition:
   suggests: a found host becomes a peer only after the user ticks it, and
   still goes through `Peer.Validate` (a hostname off the network ends up in
   remote shell commands) and the key-only reachability check. Runs on a
-  terminal when there is no peer yet, or always with `--discover`.
+  terminal when there is no peer yet, or always with `--discover`. Every
+  found host is offered by IPv4, never its `.local` name (a Bonjour hit
+  waits for its A record; a swept address beats an advertised one): ssh
+  keys known_hosts on the exact name typed, so a machine trusted by IP still
+  fails by name. Likewise `setup.SelfHost` defaults the address peers reach
+  this machine back on to its LAN IP, not `os.Hostname()`.
 - **`internal/setup`** — `install.go` (`Install`/`Uninstall` for the local
   machine, plus mesh-wide `UninstallMesh` which sshes each peer to run its
   own local uninstall before cleaning up here — copies the binary, writes the

@@ -83,7 +83,7 @@ func TestAbsorbResolvesAFullAnswerInOnePacket(t *testing.T) {
 
 	got := c.take()
 	want := []Host{{
-		Name: "Guillermo’s Mac Studio", Host: "Guillermos-Mac-Studio.local",
+		Name: "Guillermo’s Mac Studio", Host: "192.168.1.5", Hostname: "Guillermos-Mac-Studio.local",
 		Addrs: []string{"192.168.1.5"}, Sources: []Source{SourceBonjour},
 	}}
 	if !reflect.DeepEqual(got, want) {
@@ -109,13 +109,14 @@ func TestAbsorbStitchesAnswersAcrossPackets(t *testing.T) {
 	}
 
 	_ = c.absorb(response(t, []record{srv(studio, "studio.local.", 22)}, nil))
-	if got := c.take(); len(got) != 1 || got[0].Host != "studio.local" || len(got[0].Addrs) != 0 {
-		t.Fatalf("take after SRV = %+v", got)
+	if got := c.take(); len(got) != 0 {
+		t.Fatalf("no address yet is nothing to ssh to, got %+v", got)
 	}
 
-	// A later A record re-reports the host with the address it now has.
+	// The A record makes it a host, addressed by IP.
 	_ = c.absorb(response(t, []record{a("studio.local.", [4]byte{10, 0, 0, 9})}, nil))
-	if got := c.take(); len(got) != 1 || !reflect.DeepEqual(got[0].Addrs, []string{"10.0.0.9"}) {
+	if got := c.take(); len(got) != 1 || got[0].Host != "10.0.0.9" || got[0].Hostname != "studio.local" ||
+		!reflect.DeepEqual(got[0].Addrs, []string{"10.0.0.9"}) {
 		t.Errorf("take after A = %+v", got)
 	}
 }

@@ -83,7 +83,7 @@ func localIdentity() identity {
 }
 
 func (id identity) is(h Host) bool {
-	if id.names[bareHost(h.Host)] || id.addrs[h.Host] {
+	if id.names[bareHost(h.Host)] || id.addrs[h.Host] || (h.Hostname != "" && id.names[bareHost(h.Hostname)]) {
 		return true
 	}
 	for _, a := range h.Addrs {

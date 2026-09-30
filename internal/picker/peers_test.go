@@ -13,7 +13,7 @@ import (
 
 func studioHost() discovery.Host {
 	return discovery.Host{
-		Name: "Studio", Host: "studio.local", Addrs: []string{"192.168.1.5"},
+		Name: "Studio", Host: "192.168.1.5", Hostname: "studio.local", Addrs: []string{"192.168.1.5"},
 		Sources: []discovery.Source{discovery.SourceBonjour, discovery.SourcePortScan},
 		Latency: 4 * time.Millisecond,
 	}
@@ -25,10 +25,10 @@ func TestPeerRowsOnAFirstInstallHaveNoHeadings(t *testing.T) {
 		t.Fatalf("rows = %+v", rows)
 	}
 	r := rows[0]
-	if r.Key != "studio.local" || r.Section != "" || r.Ticked || r.Locked {
+	if r.Key != "192.168.1.5" || r.Section != "" || r.Ticked || r.Locked {
 		t.Errorf("row = %+v", r)
 	}
-	if want := []string{"Studio", "studio.local", "bonjour, port 22   4ms"}; !reflect.DeepEqual(r.Cols, want) {
+	if want := []string{"Studio", "192.168.1.5", "bonjour, port 22   4ms"}; !reflect.DeepEqual(r.Cols, want) {
 		t.Errorf("cols = %q, want %q", r.Cols, want)
 	}
 }
@@ -37,7 +37,7 @@ func TestPeerRowsShowConfiguredPeersLockedAndOnlyOnce(t *testing.T) {
 	current := []config.Peer{{Host: "192.168.1.5", User: "g"}, {Host: "laptop.local", User: "g"}}
 	rows := PeerRows([]discovery.Host{studioHost()}, current)
 
-	// studio.local owns 192.168.1.5, so it is the configured peer, not a new find.
+	// Studio owns 192.168.1.5, so it is the configured peer, not a new find.
 	if len(rows) != 2 {
 		t.Fatalf("rows = %+v, want just the two configured peers", rows)
 	}
@@ -48,9 +48,16 @@ func TestPeerRowsShowConfiguredPeersLockedAndOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestPeerRowsRecogniseAPeerConfiguredByItsOldName(t *testing.T) {
+	rows := PeerRows([]discovery.Host{studioHost()}, []config.Peer{{Host: "Studio.local", User: "g"}})
+	if len(rows) != 1 || rows[0].Section != sectionPeers {
+		t.Errorf("rows = %+v, want only the configured peer", rows)
+	}
+}
+
 func TestPeerRowsPutNewFindsFirstUnderAHeading(t *testing.T) {
 	rows := PeerRows([]discovery.Host{studioHost()}, []config.Peer{{Host: "laptop.local", User: "g"}})
-	if len(rows) != 2 || rows[0].Key != "studio.local" || rows[0].Section != sectionFound {
+	if len(rows) != 2 || rows[0].Key != "192.168.1.5" || rows[0].Section != sectionFound {
 		t.Errorf("rows = %+v", rows)
 	}
 }
@@ -69,10 +76,10 @@ func TestChoosePeersStreamsFindsIntoThePicker(t *testing.T) {
 		}
 		for rows := range cfg.Updates {
 			for _, r := range rows {
-				sawStudio = sawStudio || r.Key == "studio.local"
+				sawStudio = sawStudio || r.Key == "192.168.1.5"
 			}
 		}
-		return encode([]string{"studio.local", "laptop.local"}), nil
+		return encode([]string{"192.168.1.5", "laptop.local"}), nil
 	}, found, []config.Peer{{Host: "laptop.local", User: "g"}})
 
 	if err != nil || !ok {
@@ -81,8 +88,8 @@ func TestChoosePeersStreamsFindsIntoThePicker(t *testing.T) {
 	if !sawStudio {
 		t.Error("a host the scan found never reached the picker")
 	}
-	if !reflect.DeepEqual(hosts, []string{"studio.local"}) {
-		t.Errorf("hosts = %v, want only the newly ticked studio.local", hosts)
+	if !reflect.DeepEqual(hosts, []string{"192.168.1.5"}) {
+		t.Errorf("hosts = %v, want only the newly ticked 192.168.1.5", hosts)
 	}
 }
 

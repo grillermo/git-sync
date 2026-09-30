@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/grillermo/git-sync/internal/config"
+	"github.com/grillermo/git-sync/internal/discovery"
 )
 
 type Options struct {
@@ -125,10 +126,7 @@ func Install(o Options) error {
 		return nil
 	}
 
-	selfHost := o.SelfHost
-	if selfHost == "" {
-		selfHost, _ = os.Hostname()
-	}
+	selfHost := SelfHost(o.SelfHost)
 	selfUser := o.SelfUser
 	if selfUser == "" {
 		selfUser = os.Getenv("USER")
@@ -284,4 +282,20 @@ func writeFileAtomic(dst string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+// SelfHost is the address peers reach this machine back on: flagVal when
+// given, else this machine's LAN IPv4, and the hostname only when there is no
+// such address. An IP rather than the hostname, because a .local name needs
+// mDNS on every peer and ssh keys known_hosts on the exact name typed - a
+// peer that trusts this machine as 192.168.1.2 still refuses it by name.
+func SelfHost(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if ip, ok := discovery.LocalIP(); ok {
+		return ip
+	}
+	h, _ := os.Hostname()
+	return h
 }
