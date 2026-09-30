@@ -170,6 +170,19 @@ Package layering, leaves to composition:
   scan to `github.com/grillermo/chicle` (pinned at a published tag, not a
   `replace`) as a multi-select list for choosing which to sync. The UI itself
   lives in chicle and draws on `/dev/tty`.
+- **`internal/discovery`** — local-network peer discovery for `install`,
+  ported from vvterm's `LocalSSHDiscoveryService`: a Bonjour browse for
+  `_ssh._tcp`/`_sftp-ssh._tcp` (hand-rolled mDNS via
+  `golang.org/x/net/dns/dnsmessage`, sent from an ephemeral port as a
+  "legacy unicast" query so it never needs to bind 5353) alongside a
+  port-22 sweep of this machine's /24, for `ScanDuration`. `Set` merges the
+  two — a port-scan IP that a Bonjour host owns folds into that host — and
+  `Scan` drops this machine itself. `picker.ChoosePeers` shows the results
+  in chicle as they arrive (via `chicle.Config.Updates`). Discovery only
+  suggests: a found host becomes a peer only after the user ticks it, and
+  still goes through `Peer.Validate` (a hostname off the network ends up in
+  remote shell commands) and the key-only reachability check. Runs on a
+  terminal when there is no peer yet, or always with `--discover`.
 - **`internal/setup`** — `install.go` (`Install`/`Uninstall` for the local
   machine, plus mesh-wide `UninstallMesh` which sshes each peer to run its
   own local uninstall before cleaning up here — copies the binary, writes the

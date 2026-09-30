@@ -43,6 +43,17 @@ mesh. Add `:base_dir` when that machine lays its repos out under a different
 path than this one. `--peer-host`/`--peer-user` still work as a single-peer
 shorthand for the two-machine case.
 
+Or name none: on a terminal with no peer configured yet, `install` scans the
+local network for ssh hosts - a Bonjour browse for `_ssh._tcp`/`_sftp-ssh._tcp`
+plus a port-22 sweep of this machine's /24, for about six seconds - and lists
+what it finds in a checkbox picker as the machines turn up. Tick the ones to
+sync with and give the username to use on them (defaults to yours here).
+`--discover` runs the same scan even when peers are already configured, to add
+more. Discovery only suggests: every machine picked still goes through the
+key-only connect check below. A Mac advertises itself over Bonjour when
+Remote Login is on; a Linux box does when avahi publishes its ssh service,
+and is otherwise found by the port sweep, by IP.
+
 The wizard runs in four stages: **connect, pick, verify, install**.
 
 - **Connect** checks that this machine can reach every peer over key-only
@@ -69,6 +80,7 @@ Flags:
 | Flag | Effect |
 |---|---|
 | `--peer user@host[:base_dir]` | another machine in the mesh (repeatable) |
+| `--discover` | scan the local network for more machines even when peers are already configured |
 | `--all` | sync every repo found; skip the picker |
 | `--repos a,b,c` | sync exactly these repos; skip the picker (required when there is no terminal) |
 | `--no-peer` | set up this machine only |

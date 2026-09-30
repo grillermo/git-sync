@@ -170,3 +170,25 @@ func TestUninstallLocalDoesNotTouchPeers(t *testing.T) {
 		t.Errorf("--local must not ssh anywhere:\n%s", sb.SSHCalls())
 	}
 }
+
+func TestPeersFromSkipsAHostileDiscoveredHostname(t *testing.T) {
+	// Hostnames come off the network via mDNS and end up in remote shell
+	// commands: a bad one is dropped, not provisioned, and not fatal.
+	var out bytes.Buffer
+	peers, ok, err := peersFrom([]string{"studio.local", "evil;rm -rf ~.local"}, "g", &out)
+	if err != nil || !ok {
+		t.Fatalf("peersFrom = %v, %v", ok, err)
+	}
+	if want := []config.Peer{{Host: "studio.local", User: "g"}}; !reflect.DeepEqual(peers, want) {
+		t.Errorf("peers = %+v, want %+v", peers, want)
+	}
+	if !strings.Contains(out.String(), "skipping") {
+		t.Errorf("the dropped host must be reported:\n%s", out.String())
+	}
+}
+
+func TestPeersFromRejectsABadUsername(t *testing.T) {
+	if _, ok, err := peersFrom([]string{"studio.local"}, "g h", io.Discard); err == nil || ok {
+		t.Errorf("ok=%v err=%v, want the typo refused", ok, err)
+	}
+}

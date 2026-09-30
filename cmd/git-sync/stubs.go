@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
+	"github.com/grillermo/git-sync/internal/discovery"
 	"github.com/grillermo/git-sync/internal/gitcmd"
 	"github.com/grillermo/git-sync/internal/lock"
 	"github.com/grillermo/git-sync/internal/picker"
@@ -54,6 +56,8 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	all := fs.Bool("all", false, "sync every repo found; skip the picker")
 	only := fs.String("repos", "", "comma-separated repos to sync; skips the picker")
 	noPeer := fs.Bool("no-peer", false, "do not provision any peer machine")
+	discover := fs.Bool("discover", false,
+		"look for more machines on this network even when peers are already configured")
 	noInitialSync := fs.Bool("no-initial-sync", false,
 		"do not push/fast-forward the selected repos level with their remotes")
 	selfHost := fs.String("self-host", "", "this machine's hostname, as the peer sees it")
@@ -91,6 +95,24 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		peers = append(peers, cfg.PeerList()...)
 	}
 	peers = config.Config{Peers: peers}.PeerList()
+
+	// Step 2a: on a terminal, offer the machines on this network instead of
+	// asking for a hostname - always with --discover, otherwise only when
+	// there is no peer yet. Ticking nothing falls through to the prompt below;
+	// a discovery that cannot run at all is only a warning, for the same
+	// reason.
+	if !*noPeer && (*discover || len(peers) == 0) && isTTY(stdout) {
+		fmt.Fprintf(stdout, "looking for machines on this network (%s)\n", discovery.ScanDuration)
+		found, ok, err := discoverPeers(peers, stdout)
+		switch {
+		case err != nil:
+			fmt.Fprintln(stderr, "could not look for machines:", err)
+		case !ok:
+			fmt.Fprintln(stdout, "cancelled; nothing was installed")
+			return 0
+		}
+		peers = config.Config{Peers: append(peers, found...)}.PeerList()
+	}
 
 	if len(peers) == 0 && !*noPeer {
 		host := prompt(stdout, "peer hostname: ")
@@ -200,6 +222,45 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		levelRepos(config.Config{BaseDir: base, RemoteNames: cfgRemotes()}, peers, repos, stdout, stderr)
 	}
 	return 0
+}
+
+// discoverPeers scans the local network behind the machine picker and turns
+// the hosts ticked into peers, asking once for the account to use on them -
+// the same one as here, unless the user says otherwise. ok is false when the
+// user cancelled the picker.
+func discoverPeers(current []config.Peer, stdout io.Writer) ([]config.Peer, bool, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hosts, ok, err := picker.ChoosePeers(discovery.Scan(ctx), current)
+	if err != nil || !ok || len(hosts) == 0 {
+		return nil, ok, err
+	}
+	def := resolveSelfUser("")
+	user := prompt(stdout, fmt.Sprintf("username on those machines [%s]: ", def))
+	if user == "" {
+		user = def
+	}
+	return peersFrom(hosts, user, stdout)
+}
+
+// peersFrom pairs each discovered host with user. A hostname is untrusted
+// input from the network and ends up inside remote shell commands, so one
+// that would not be a valid peer is skipped with a warning; a bad user is the
+// user's own typo and fails the lot.
+func peersFrom(hosts []string, user string, w io.Writer) ([]config.Peer, bool, error) {
+	if err := (config.Peer{Host: "x", User: user}).Validate(); err != nil {
+		return nil, false, err
+	}
+	out := make([]config.Peer, 0, len(hosts))
+	for _, h := range hosts {
+		p := config.Peer{Host: h, User: user}
+		if err := p.Validate(); err != nil {
+			fmt.Fprintf(w, "skipping %q: %v\n", h, err)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, true, nil
 }
 
 // resolveSelfHost is the hostname install tells a peer to reach this machine
