@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -137,42 +138,42 @@ func fixFor(self config.Peer, r KeyResult) Fix {
 		on = r.From.Host
 	}
 
-	// copyID installs a key, generating one first if there is none, and - as
-	// ssh-copy-id connects interactively - asks whether to trust an unknown
-	// host key on the way.
-	copyID := func(extra ...string) {
-		if local {
-			if !hasPublicKey() {
-				f.Steps = append(f.Steps, []string{"ssh-keygen", "-t", "ed25519"})
-			}
-			for _, e := range extra {
-				f.Steps = append(f.Steps, strings.Fields(e))
-			}
-			f.Steps = append(f.Steps, []string{"ssh-copy-id", to.Target()})
-			return
+	// run puts steps in place: as they are here, or on r.From over a
+	// terminal so its prompts reach the user.
+	run := func(local [][]string, remote string) {
+		if isSelf(self, r.From) {
+			f.Steps = local
+		} else {
+			f.Steps = [][]string{{"ssh", "-t", r.From.Target(), remote}}
 		}
-		// Run on r.From, over a terminal so its prompts reach the user.
-		script := "{ ls ~/.ssh/id_*.pub >/dev/null 2>&1 || ssh-keygen -t ed25519; }"
-		for _, e := range extra {
-			script += " && " + e
+	}
+	// A host key problem is fixed by connecting once by hand, which asks
+	// whether to trust the key (and shows any other name it is already known
+	// by). ssh-copy-id is the fix for a rejected key, not this; if login
+	// still fails afterwards, the next install says so on its own.
+	accept := func(pre ...string) {
+		steps := [][]string{}
+		for _, p := range pre {
+			steps = append(steps, strings.Fields(p))
 		}
-		script += " && ssh-copy-id " + to.Target()
-		f.Steps = [][]string{{"ssh", "-t", r.From.Target(), script}}
+		steps = append(steps, []string{"ssh", to.Target(), "true"})
+		remote := strings.Join(append(pre, "ssh "+shellQuote(to.Target())+" true"), " && ")
+		run(steps, remote)
 	}
 
 	switch f.Problem {
 	case ProblemHostKeyUnknown:
 		f.Explain = fmt.Sprintf("%s has never seen %s's host key, and git-sync cannot answer ssh's "+
 			"\"trust this host?\" prompt", on, to.Host)
-		copyID()
+		accept()
 	case ProblemHostKeyChanged:
 		f.Explain = fmt.Sprintf("%s has a DIFFERENT host key recorded for %s. Expected if that machine "+
 			"was reinstalled or its address reused; otherwise it may be an impostor", on, to.Host)
 		f.Risky = true
-		copyID("ssh-keygen -R " + to.Host)
+		accept("ssh-keygen -R " + to.Host)
 	case ProblemAuth:
 		f.Explain = fmt.Sprintf("%s does not accept any of %s's ssh keys", to.Host, on)
-		copyID()
+		run(copyIDSteps(to.Target()), remoteCopyID(to.Target()))
 	case ProblemUnresolvable:
 		f.Explain = fmt.Sprintf("%s cannot resolve the name %s", on, to.Host)
 		f.Hint = fmt.Sprintf("use %s's IP address, or check that mDNS (.local names) works on %s", to.Host, on)
@@ -220,14 +221,62 @@ func isSelf(self, p config.Peer) bool {
 	return strings.EqualFold(self.Host, p.Host) && self.User == p.User
 }
 
-// hasPublicKey reports whether ssh-copy-id would have a key to copy.
-func hasPublicKey() bool {
-	home, err := os.UserHomeDir()
+// identityFiles lists the private keys ssh would offer to target, in order,
+// as `ssh -G` reports them - so a key named in ~/.ssh/config counts, not just
+// the id_* defaults. A variable so tests do not read the real ~/.ssh/config.
+var identityFiles = func(target string) []string {
+	out, err := exec.Command("ssh", "-G", target).Output()
 	if err != nil {
-		return false
+		return nil
 	}
-	matches, _ := filepath.Glob(filepath.Join(home, ".ssh", "id_*.pub"))
-	return len(matches) > 0
+	home, _ := os.UserHomeDir()
+	var files []string
+	for _, line := range strings.Split(string(out), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok || !strings.EqualFold(k, "identityfile") {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(v, "~/"); ok && home != "" {
+			v = filepath.Join(home, rest)
+		}
+		files = append(files, v)
+	}
+	return files
+}
+
+// agentHasKeys reports whether ssh-agent holds a key, which plain
+// ssh-copy-id would copy. A variable for the same reason as identityFiles.
+var agentHasKeys = func() bool {
+	return exec.Command("ssh-add", "-L").Run() == nil
+}
+
+// copyIDSteps installs this machine's key on target. ssh-copy-id itself
+// ignores ~/.ssh/config: without -i it copies the agent's keys or the newest
+// ~/.ssh/id*.pub - so for a key named by IdentityFile it would find nothing,
+// or copy a key ssh never offers. Point it at the key ssh uses; generate one
+// only when there really is none.
+func copyIDSteps(target string) [][]string {
+	for _, k := range identityFiles(target) {
+		if _, err := os.Stat(k + ".pub"); err == nil {
+			return [][]string{{"ssh-copy-id", "-i", k + ".pub", target}}
+		}
+	}
+	if agentHasKeys() {
+		return [][]string{{"ssh-copy-id", target}}
+	}
+	return [][]string{{"ssh-keygen", "-t", "ed25519"}, {"ssh-copy-id", target}}
+}
+
+// remoteCopyID is copyIDSteps as a POSIX script, for a peer whose files this
+// machine cannot see.
+func remoteCopyID(target string) string {
+	t := shellQuote(target)
+	return `k=; for f in $(ssh -G ` + t + ` 2>/dev/null | awk '$1=="identityfile"{print $2}'); do ` +
+		`case $f in "~/"*) f="$HOME/${f#"~/"}";; esac; ` +
+		`if [ -f "$f.pub" ]; then k="$f.pub"; break; fi; done; ` +
+		`if [ -n "$k" ]; then ssh-copy-id -i "$k" ` + t + `; ` +
+		`elif ssh-add -L >/dev/null 2>&1; then ssh-copy-id ` + t + `; ` +
+		`else ssh-keygen -t ed25519 && ssh-copy-id ` + t + `; fi`
 }
 
 // shellQuote leaves plain words alone and single-quotes anything else, for

@@ -248,7 +248,7 @@ func TestInstallKeepsThePendingSelectionWhileAMachineIsUnreachable(t *testing.T)
 	if loadPending(sb.BaseDir) == nil {
 		t.Error("the selection must survive until the mesh pairs")
 	}
-	if !strings.Contains(errOut.String(), "ssh-copy-id t@b.local") {
+	if !strings.Contains(errOut.String(), "ssh t@b.local true") {
 		t.Errorf("the unreachable machine's fix must be spelled out:\n%s", errOut.String())
 	}
 }

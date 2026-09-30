@@ -21,14 +21,24 @@ func failed(from, to config.Peer, out string) KeyResult {
 	return KeyResult{From: from, To: to, Err: firstLine(out), Output: out}
 }
 
-// withKey points HOME at a temp dir that does (or does not) hold a public key.
-func withKey(t *testing.T, has bool) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if has {
-		_ = os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
-		_ = os.WriteFile(filepath.Join(home, ".ssh", "id_ed25519.pub"), []byte("k"), 0o600)
+// withKeys stands in for what ssh would offer: the identity files `ssh -G`
+// lists (created on disk, with a .pub for those in withPub) and whether the
+// agent holds a key.
+func withKeys(t *testing.T, agent bool, files map[string]bool) {
+	dir := t.TempDir()
+	var paths []string
+	for name, withPub := range files {
+		p := filepath.Join(dir, name)
+		_ = os.WriteFile(p, []byte("private"), 0o600)
+		if withPub {
+			_ = os.WriteFile(p+".pub", []byte("public"), 0o600)
+		}
+		paths = append(paths, p)
 	}
+	origFiles, origAgent := identityFiles, agentHasKeys
+	identityFiles = func(string) []string { return paths }
+	agentHasKeys = func() bool { return agent }
+	t.Cleanup(func() { identityFiles, agentHasKeys = origFiles, origAgent })
 }
 
 func TestDiagnoseTellsTheFailuresApart(t *testing.T) {
@@ -48,8 +58,8 @@ func TestDiagnoseTellsTheFailuresApart(t *testing.T) {
 	}
 }
 
-func TestAnUnknownHostKeyIsFixedByAcceptingItInteractively(t *testing.T) {
-	withKey(t, true)
+func TestAnUnknownHostKeyIsFixedByConnectingOnceByHand(t *testing.T) {
+	withKeys(t, false, nil)
 	fixes := FixesFor(fixSelf, []KeyResult{
 		failed(fixSelf, mini, "ssh mini: exit status 255: Host key verification failed."),
 	})
@@ -57,7 +67,8 @@ func TestAnUnknownHostKeyIsFixedByAcceptingItInteractively(t *testing.T) {
 		t.Fatalf("fixes = %+v", fixes)
 	}
 	f := fixes[0]
-	if want := []string{"ssh-copy-id g@Guillermos-Mac-mini.local"}; !reflect.DeepEqual(f.Commands(), want) {
+	// Not ssh-keygen/ssh-copy-id: login is not what failed.
+	if want := []string{"ssh g@Guillermos-Mac-mini.local true"}; !reflect.DeepEqual(f.Commands(), want) {
 		t.Errorf("commands = %q, want %q", f.Commands(), want)
 	}
 	if !strings.Contains(f.Explain, "host key") || f.Risky {
@@ -65,8 +76,39 @@ func TestAnUnknownHostKeyIsFixedByAcceptingItInteractively(t *testing.T) {
 	}
 }
 
-func TestAFixGeneratesAKeyFirstWhenThereIsNone(t *testing.T) {
-	withKey(t, false)
+func TestAChangedHostKeyIsRiskyAndForgetsTheOldKey(t *testing.T) {
+	f := FixesFor(fixSelf, []KeyResult{failed(fixSelf, mini, "REMOTE HOST IDENTIFICATION HAS CHANGED!")})[0]
+	want := []string{"ssh-keygen -R Guillermos-Mac-mini.local", "ssh g@Guillermos-Mac-mini.local true"}
+	if !f.Risky || !reflect.DeepEqual(f.Commands(), want) {
+		t.Errorf("fix = %+v / %q", f, f.Commands())
+	}
+}
+
+func TestARejectedKeyCopiesTheKeySshActuallyOffers(t *testing.T) {
+	// A key named by IdentityFile in ~/.ssh/config, not an id_* default:
+	// plain ssh-copy-id would never find it.
+	withKeys(t, false, map[string]bool{"macbook_pro_2022": true})
+	f := FixesFor(fixSelf, []KeyResult{failed(fixSelf, mini, "Permission denied (publickey).")})[0]
+	if len(f.Steps) != 1 {
+		t.Fatalf("steps = %q", f.Steps)
+	}
+	s := f.Steps[0]
+	if len(s) != 4 || s[0] != "ssh-copy-id" || s[1] != "-i" ||
+		filepath.Base(s[2]) != "macbook_pro_2022.pub" || s[3] != "g@Guillermos-Mac-mini.local" {
+		t.Errorf("steps = %q", f.Steps)
+	}
+}
+
+func TestARejectedKeyFallsBackToTheAgent(t *testing.T) {
+	withKeys(t, true, map[string]bool{"id_ed25519": false})
+	f := FixesFor(fixSelf, []KeyResult{failed(fixSelf, mini, "Permission denied (publickey).")})[0]
+	if want := []string{"ssh-copy-id g@Guillermos-Mac-mini.local"}; !reflect.DeepEqual(f.Commands(), want) {
+		t.Errorf("commands = %q, want %q", f.Commands(), want)
+	}
+}
+
+func TestAFixGeneratesAKeyOnlyWhenThereIsNone(t *testing.T) {
+	withKeys(t, false, nil)
 	f := FixesFor(fixSelf, []KeyResult{failed(fixSelf, mini, "Permission denied (publickey).")})[0]
 	want := []string{"ssh-keygen -t ed25519", "ssh-copy-id g@Guillermos-Mac-mini.local"}
 	if !reflect.DeepEqual(f.Commands(), want) {
@@ -74,26 +116,31 @@ func TestAFixGeneratesAKeyFirstWhenThereIsNone(t *testing.T) {
 	}
 }
 
-func TestAChangedHostKeyIsRiskyAndForgetsTheOldKey(t *testing.T) {
-	withKey(t, true)
-	f := FixesFor(fixSelf, []KeyResult{failed(fixSelf, mini, "REMOTE HOST IDENTIFICATION HAS CHANGED!")})[0]
-	want := []string{"ssh-keygen -R Guillermos-Mac-mini.local", "ssh-copy-id g@Guillermos-Mac-mini.local"}
-	if !f.Risky || !reflect.DeepEqual(f.Commands(), want) {
-		t.Errorf("fix = %+v / %q", f, f.Commands())
-	}
-}
-
-func TestAPeerToPeerFixRunsOnThePeerOverATerminal(t *testing.T) {
+func TestAPeerToPeerHostKeyFixRunsOnThePeerOverATerminal(t *testing.T) {
 	f := FixesFor(fixSelf, []KeyResult{
 		{From: fixSelf, To: mini, OK: true},
 		failed(mini, old, "Host key verification failed."),
 	})[0]
+	want := [][]string{{"ssh", "-t", "g@Guillermos-Mac-mini.local", "ssh g@macbook-mid-2015.local true"}}
+	if !reflect.DeepEqual(f.Steps, want) {
+		t.Errorf("steps = %q, want %q", f.Steps, want)
+	}
+}
+
+func TestAPeerToPeerKeyFixFindsThePeersOwnKey(t *testing.T) {
+	f := FixesFor(fixSelf, []KeyResult{
+		{From: fixSelf, To: mini, OK: true},
+		failed(mini, old, "Permission denied (publickey)."),
+	})[0]
 	if len(f.Steps) != 1 || !reflect.DeepEqual(f.Steps[0][:3], []string{"ssh", "-t", "g@Guillermos-Mac-mini.local"}) {
 		t.Fatalf("steps = %q", f.Steps)
 	}
-	if script := f.Steps[0][3]; !strings.HasSuffix(script, "ssh-copy-id g@macbook-mid-2015.local") ||
-		!strings.Contains(script, "ssh-keygen -t ed25519") {
-		t.Errorf("remote script = %q", script)
+	script := f.Steps[0][3]
+	for _, want := range []string{"ssh -G g@macbook-mid-2015.local", `ssh-copy-id -i "$k" g@macbook-mid-2015.local`,
+		"ssh-keygen -t ed25519 && ssh-copy-id g@macbook-mid-2015.local"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("remote script lacks %q:\n%s", want, script)
+		}
 	}
 }
 
