@@ -14,6 +14,9 @@ type KeyResult struct {
 	To   config.Peer
 	OK   bool
 	Err  string
+	// Output is ssh's whole error, which FixesFor reads to tell a missing
+	// key from an unknown host key from sshd being off.
+	Output string
 }
 
 // keyCheckMarker opens the remote command, so it is identifiable in the debug
@@ -64,30 +67,24 @@ func CheckKeys(self config.Peer, peers []config.Peer) []KeyResult {
 func probeKey(from, to config.Peer, run func(config.Peer) error) KeyResult {
 	r := KeyResult{From: from, To: to, OK: true}
 	if err := run(to); err != nil {
-		r.OK, r.Err = false, firstLine(err.Error())
+		r.OK, r.Err, r.Output = false, firstLine(err.Error()), err.Error()
 	}
 	return r
 }
 
-// RenderKeyChecks prints the pairs that cannot connect and returns how many
-// there were. Install warns on these rather than refusing: the rest of the
-// mesh is still worth setting up, and those pairs simply will not sync until
-// a key is added.
-func RenderKeyChecks(w io.Writer, results []KeyResult) int {
-	var bad []KeyResult
-	for _, r := range results {
-		if !r.OK {
-			bad = append(bad, r)
-		}
+// RenderKeyChecks prints the pairs that cannot connect, each with the
+// command that fixes it, and returns those fixes. Install warns on these
+// rather than refusing: the rest of the mesh is still worth setting up, and
+// those pairs simply will not sync until they are fixed.
+func RenderKeyChecks(w io.Writer, self config.Peer, results []KeyResult) []Fix {
+	fixes := FixesFor(self, results)
+	if len(fixes) == 0 {
+		return nil
 	}
-	if len(bad) == 0 {
-		return 0
+	fmt.Fprintf(w, "\n%d machine pairs cannot ssh to each other:\n", len(fixes))
+	for _, f := range fixes {
+		RenderFix(w, f)
 	}
-	fmt.Fprintf(w, "\n%d machine pairs cannot ssh to each other:\n", len(bad))
-	for _, r := range bad {
-		fmt.Fprintf(w, "  %s -> %s: %s\n", r.From.Host, r.To.Host, r.Err)
-		fmt.Fprintf(w, "      fix on %s with: ssh-copy-id %s\n", r.From.Host, r.To.Target())
-	}
-	fmt.Fprintln(w, "  those directions will not sync until a key is in place; the rest will.")
-	return len(bad)
+	fmt.Fprintln(w, "  those directions will not sync until fixed; the rest will.")
+	return fixes
 }

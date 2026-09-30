@@ -198,9 +198,13 @@ Package layering, leaves to composition:
   pair silently never converges otherwise), `keycheck.go` (`CheckKeys` probes
   every *ordered pair* of machines in the mesh, not just this machine to each
   peer — a peer-to-peer check runs by sshing onto `from` and having it in
-  turn `ssh ... to true`; `RenderKeyChecks` prints the pairs that fail and
-  how to fix them with `ssh-copy-id`, and install carries on regardless,
-  since the rest of the mesh is still worth setting up), `sshauth.go`
+  turn `ssh ... to true`; `RenderKeyChecks` prints the pairs that fail with
+  their fixes, and install carries on regardless, since the rest of the mesh
+  is still worth setting up), `sshfix.go` (`FixesFor` reads ssh's output to
+  tell an unknown host key from a changed one, a rejected key, sshd off, or an
+  unresolvable name, and builds the exact interactive commands for that pair
+  — wrapped in `ssh -t <from>` when the pair runs on a peer; install offers to
+  run them, with a changed host key confirmed on its own), `sshauth.go`
   (`Reachable` — a key-only connectivity probe; there is no password prompt
   path anymore), `initialsync.go` (the last install stage: measures every
   machine in the mesh against the shared remote, then pushes whichever side
@@ -218,6 +222,11 @@ Package layering, leaves to composition:
 - **`internal/report`** — `aggregate.go` is pure functions over a slice of
   `activity.Event` (no I/O, no terminal — trivially testable), `plain.go` is
   static output for piped/non-tty use, `tui.go` is the bubbletea browser.
+
+`cmd/git-sync/pending.go` saves the picker's repo selection in the temp
+dir until a run pairs every machine, so repeated installs while fixing ssh
+reuse it instead of reopening the picker (`--pick` reopens it).
+`testutil.NewSandbox` points `TMPDIR` into the sandbox for that reason.
 
 Runtime layout under `~/.gitsync/` (or `$GITSYNC_HOME`): `bin/git-sync` (the
 copy the hooks and ssh invoke — re-copying on install can't race a commit

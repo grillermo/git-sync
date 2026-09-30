@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -56,6 +58,8 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	all := fs.Bool("all", false, "sync every repo found; skip the picker")
 	only := fs.String("repos", "", "comma-separated repos to sync; skips the picker")
 	noPeer := fs.Bool("no-peer", false, "do not provision any peer machine")
+	pick := fs.Bool("pick", false,
+		"open the repo picker even when a previous unfinished install saved a selection")
 	discover := fs.Bool("discover", false,
 		"look for more machines on this network even when peers are already configured")
 	noInitialSync := fs.Bool("no-initial-sync", false,
@@ -142,26 +146,28 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	// peer-unreachable case. Skipped along with the rest of peer provisioning
 	// under --no-peer, since nothing is going to ssh anywhere.
 	var reachable []config.Peer
+	paired := false
 	if !*noPeer {
-		for _, p := range peers {
-			if err := setup.Reachable(p.Target()); err != nil {
-				fmt.Fprintf(stderr, "could not reach %s (%v); continuing\n", p.Host, err)
-				continue
-			}
-			reachable = append(reachable, p)
-		}
+		self := config.Peer{Host: resolveSelfHost(*selfHost), User: resolveSelfUser(*selfUser)}
+		reachable = connect(self, peers, stdout, stderr)
 
 		// Step 4: every machine in the mesh has to be able to ssh to every
 		// other - a missing key between two *peers*, a pair this machine
 		// never exercises itself, would otherwise only show up later as a
 		// failing notify nobody is watching. Warning only: the rest of the
 		// mesh is still worth setting up.
-		self := config.Peer{Host: resolveSelfHost(*selfHost), User: resolveSelfUser(*selfUser)}
-		setup.RenderKeyChecks(stdout, setup.CheckKeys(self, peers))
+		fixes := setup.RenderKeyChecks(stdout, self, setup.CheckKeys(self, peers))
+		if offerFixes(fixes, stdout, stderr) {
+			fixes = setup.RenderKeyChecks(stdout, self, setup.CheckKeys(self, peers))
+			if len(fixes) == 0 {
+				fmt.Fprintln(stdout, "every pair of machines connects now")
+			}
+		}
+		paired = len(reachable) == len(peers) && len(fixes) == 0
 	}
 
 	fmt.Fprintf(stdout, "choosing repos under %s\n", base)
-	repos, err := chooseRepos(base, *all, *only, stdout, stderr)
+	repos, err := chooseRepos(base, *all, *only, *pick, stdout, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -213,6 +219,15 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// The saved repo selection has done its job once every machine is
+	// reachable and every pair connects; until then the next run reuses it.
+	if paired || *noPeer {
+		clearPending()
+	} else if loadPending(base) != nil {
+		fmt.Fprintf(stdout, "not every machine is paired yet; your repo selection is kept in %s "+
+			"for the next run\n", pendingPath())
+	}
+
 	// Step 7 / stage "level": bring every machine up to the shared remote now
 	// that the hook is armed everywhere. A repo that was already out of step
 	// stays out of step forever otherwise - receive only ever fast-forwards,
@@ -261,6 +276,98 @@ func peersFrom(hosts []string, user string, w io.Writer) ([]config.Peer, bool, e
 		out = append(out, p)
 	}
 	return out, true, nil
+}
+
+// connect checks this machine can reach every peer over key-only ssh, says
+// exactly what is wrong with each one that it cannot, offers to run the fixes,
+// and returns the peers that answer.
+func connect(self config.Peer, peers []config.Peer, stdout, stderr io.Writer) []config.Peer {
+	reach := func() ([]config.Peer, []setup.Fix) {
+		var ok []config.Peer
+		var results []setup.KeyResult
+		for _, p := range peers {
+			r := setup.Reach(self, p)
+			if r.OK {
+				ok = append(ok, p)
+			}
+			results = append(results, r)
+		}
+		return ok, setup.FixesFor(self, results)
+	}
+	render := func(fixes []setup.Fix) {
+		fmt.Fprintf(stderr, "could not reach %d of %d machines:\n", len(fixes), len(peers))
+		for _, f := range fixes {
+			setup.RenderFix(stderr, f)
+		}
+	}
+
+	ok, fixes := reach()
+	if len(fixes) == 0 {
+		return ok
+	}
+	render(fixes)
+	if offerFixes(fixes, stdout, stderr) {
+		if ok, fixes = reach(); len(fixes) > 0 {
+			render(fixes)
+		}
+	}
+	if len(fixes) > 0 {
+		fmt.Fprintln(stderr, "continuing without them; run install again once they are fixed")
+	}
+	return ok
+}
+
+// offerFixes asks, on a terminal, to run every fix that has commands, and
+// reports whether it ran any. A fix that throws away a recorded host key is
+// asked about on its own and needs a typed "yes": that is the one case where
+// the "fix" could be letting an impostor in.
+func offerFixes(fixes []setup.Fix, stdout, stderr io.Writer) bool {
+	var safe, risky []setup.Fix
+	for _, f := range fixes {
+		switch {
+		case len(f.Steps) == 0:
+		case f.Risky:
+			risky = append(risky, f)
+		default:
+			safe = append(safe, f)
+		}
+	}
+	if len(safe)+len(risky) == 0 || !isTTY(stdout) {
+		return false
+	}
+
+	var run []setup.Fix
+	if len(safe) > 0 && confirm(stdout, os.Stdin,
+		fmt.Sprintf("run the %d fix command(s) above now? they are interactive [enter] yes, [q] skip: ", len(safe))) {
+		run = append(run, safe...)
+	}
+	for _, f := range risky {
+		fmt.Fprintf(stdout, "%s -> %s: its host key CHANGED. Only replace it if you know why "+
+			"(reinstalled, new hardware, reused address).\n", f.From.Host, f.To.Host)
+		if confirmYes(stdout, os.Stdin, "type yes to forget the old key and trust the new one: ") {
+			run = append(run, f)
+		}
+	}
+	for _, f := range run {
+		fmt.Fprintf(stdout, "fixing %s -> %s\n", f.From.Host, f.To.Host)
+		if err := setup.RunFix(f, func(argv []string) error {
+			fmt.Fprintf(stdout, "$ %s\n", strings.Join(argv, " "))
+			cmd := exec.Command(argv[0], argv[1:]...)
+			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+			return cmd.Run()
+		}); err != nil {
+			fmt.Fprintf(stderr, "fix failed: %v\n", err)
+		}
+	}
+	return len(run) > 0
+}
+
+// confirmYes is confirm for the one question where a bare enter must not
+// mean yes.
+func confirmYes(w io.Writer, r io.Reader, question string) bool {
+	fmt.Fprint(w, question)
+	sc := bufio.NewScanner(r)
+	return sc.Scan() && strings.EqualFold(strings.TrimSpace(sc.Text()), "yes")
 }
 
 // resolveSelfHost is the hostname install tells a peer to reach this machine
@@ -331,7 +438,11 @@ func levelRepos(cfg config.Config, peers []config.Peer, repos []string, stdout, 
 // chooseRepos resolves the allowlist: --all and --repos win outright, then the
 // interactive picker, and failing both it is an error rather than a hang.
 // A nil slice with a nil error means the user cancelled.
-func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) ([]string, error) {
+//
+// A selection made in the picker is saved (see pendingRepos) until a run
+// pairs every machine, and reused without asking in between; --pick reopens
+// the picker with it pre-ticked.
+func chooseRepos(base string, all bool, only string, pick bool, stdout, stderr io.Writer) ([]string, error) {
 	discovered, err := scan.Repos(base, cfgRemotes())
 	if err != nil {
 		return nil, fmt.Errorf("scanning %s: %w", base, err)
@@ -350,11 +461,23 @@ func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) (
 		return out, nil
 	}
 
+	pending := loadPending(base)
+	if pending != nil && !pick {
+		fmt.Fprintf(stdout, "using the %d repos you picked last time, saved until every machine "+
+			"pairs (%s); pass --pick to choose again\n", len(pending), pendingPath())
+		return pending, nil
+	}
+
 	// Pre-tick whatever is already being synced, so a re-run amends rather
-	// than starts over.
+	// than starts over - plus whatever an unfinished run picked.
 	var current []string
 	if cfg, cfgErr := config.Load(); cfgErr == nil {
 		current = cfg.Repos
+	}
+	for _, r := range pending {
+		if !slices.Contains(current, r) {
+			current = append(current, r)
+		}
 	}
 
 	if !isTTY(stdout) {
@@ -365,6 +488,9 @@ func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) (
 	repos, ok, err := picker.Choose(discovered, current)
 	if err != nil || !ok {
 		return nil, err
+	}
+	if err := savePending(base, repos); err != nil {
+		fmt.Fprintln(stderr, "could not save the repo selection for the next run:", err)
 	}
 	return repos, nil
 }

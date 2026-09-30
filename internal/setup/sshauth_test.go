@@ -23,7 +23,7 @@ func TestReachableReportsAPeerThatRefuses(t *testing.T) {
 	if err == nil || !setup.IsPeerUnreachable(err) {
 		t.Fatalf("Reachable = %v, want an unreachable error", err)
 	}
-	if !strings.Contains(err.Error(), "ssh-copy-id") {
-		t.Errorf("error should tell the user how to fix it, got %q", err)
+	if !strings.Contains(err.Error(), "Permission denied") {
+		t.Errorf("error must carry ssh's reason, which FixesFor reads, got %q", err)
 	}
 }

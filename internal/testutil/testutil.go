@@ -46,6 +46,11 @@ func NewSandbox(t *testing.T) *Sandbox {
 	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
 	t.Setenv("GIT_COMMITTER_NAME", "git-sync test")
 	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+	// install caches an unfinished repo selection under os.TempDir(); a real
+	// one left by the user's own install must never leak into a test.
+	tmp := filepath.Join(home, "tmp")
+	MkdirAll(t, tmp)
+	t.Setenv("TMPDIR", tmp)
 	return sb
 }
 

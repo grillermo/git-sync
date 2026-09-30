@@ -51,11 +51,11 @@ func TestCheckKeysReportsAFailingPair(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	n := setup.RenderKeyChecks(&out, results)
-	if n != len(failed) {
-		t.Errorf("RenderKeyChecks = %d, want %d", n, len(failed))
+	fixes := setup.RenderKeyChecks(&out, self, results)
+	if len(fixes) != len(failed) {
+		t.Errorf("RenderKeyChecks = %d fixes, want %d", len(fixes), len(failed))
 	}
-	if !strings.Contains(out.String(), "ssh-copy-id") {
-		t.Errorf("the report must say how to fix it:\n%s", out.String())
+	if !strings.Contains(out.String(), "c.local") {
+		t.Errorf("the report must name the failing machine:\n%s", out.String())
 	}
 }

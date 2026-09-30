@@ -192,3 +192,63 @@ func TestPeersFromRejectsABadUsername(t *testing.T) {
 		t.Errorf("ok=%v err=%v, want the typo refused", ok, err)
 	}
 }
+
+func TestPendingSelectionIsKeyedByBaseDir(t *testing.T) {
+	testutil.NewSandbox(t)
+	if err := savePending("/code", []string{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadPending("/code"); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Errorf("loadPending = %v", got)
+	}
+	if got := loadPending("/elsewhere"); got != nil {
+		t.Errorf("a selection for another base_dir must not be reused: %v", got)
+	}
+	clearPending()
+	if got := loadPending("/code"); got != nil {
+		t.Errorf("after clear: %v", got)
+	}
+}
+
+func TestChooseReposReusesAPendingSelectionWithoutThePicker(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("a")
+	_ = savePending(sb.BaseDir, []string{"a"})
+
+	// No terminal: without the saved selection this would be an error.
+	got, err := chooseRepos(sb.BaseDir, false, "", false, io.Discard, io.Discard)
+	if err != nil || !reflect.DeepEqual(got, []string{"a"}) {
+		t.Errorf("chooseRepos = %v, %v; want the saved [a]", got, err)
+	}
+}
+
+func TestInstallForgetsThePendingSelectionOnceEveryMachinePairs(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("group/proj")
+	sb.StubSSHScripted(map[string]string{"*uname*": "Darwin arm64", "*HOME*": "/home/t"}, 0)
+	_ = savePending(sb.BaseDir, []string{"group/proj"})
+
+	if code := run([]string{"install", "--peer", "t@b.local", "--no-initial-sync", sb.BaseDir},
+		io.Discard, io.Discard); code != 0 {
+		t.Fatalf("install = %d", code)
+	}
+	if loadPending(sb.BaseDir) != nil {
+		t.Error("a fully paired install must drop the saved selection")
+	}
+}
+
+func TestInstallKeepsThePendingSelectionWhileAMachineIsUnreachable(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("group/proj")
+	sb.StubSSHFailing(255, "Host key verification failed.")
+	_ = savePending(sb.BaseDir, []string{"group/proj"})
+
+	var errOut bytes.Buffer
+	run([]string{"install", "--peer", "t@b.local", "--no-initial-sync", sb.BaseDir}, io.Discard, &errOut)
+	if loadPending(sb.BaseDir) == nil {
+		t.Error("the selection must survive until the mesh pairs")
+	}
+	if !strings.Contains(errOut.String(), "ssh-copy-id t@b.local") {
+		t.Errorf("the unreachable machine's fix must be spelled out:\n%s", errOut.String())
+	}
+}

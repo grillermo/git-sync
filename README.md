@@ -61,7 +61,12 @@ The wizard runs in four stages: **connect, pick, verify, install**.
   machine to each peer, but peer to peer as well, since a missing key
   between two peers would otherwise only show up later as a failing notify
   nobody is watching. A pair that cannot connect is a warning, printed with
-  the `ssh-copy-id` command to fix it; the rest of the mesh is still set up.
+  what is actually wrong (host key never seen, host key changed, key not
+  accepted, sshd off, name does not resolve) and the exact command that fixes
+  that pair - run on the right machine, e.g. `ssh -t you@b 'ssh-copy-id you@c'`
+  for a peer-to-peer pair. On a terminal, install offers to run them for you,
+  then checks again; replacing a *changed* host key is asked separately and
+  needs a typed `yes`. The rest of the mesh is still set up either way.
 - **Pick** opens the repo checkbox picker; tick what you want synced. Each row
   names the remote that repo would sync through.
 - **Verify** asks every reachable peer which of those repos it actually has,
@@ -82,12 +87,18 @@ Flags:
 | `--peer user@host[:base_dir]` | another machine in the mesh (repeatable) |
 | `--discover` | scan the local network for more machines even when peers are already configured |
 | `--all` | sync every repo found; skip the picker |
+| `--pick` | reopen the repo picker instead of reusing the selection saved by an unfinished install |
 | `--repos a,b,c` | sync exactly these repos; skip the picker (required when there is no terminal) |
 | `--no-peer` | set up this machine only |
 | `--no-initial-sync` | skip levelling the selected repos with their remotes |
 | `--self-host` | this machine's hostname, if a peer cannot reach it by its system hostname |
 | `--self-user` | the account peers should SSH back into |
 | `--peer-base-dir` | base_dir override for `--peer-host`/`--peer-user` (use `user@host:base_dir` with `--peer` instead) |
+
+Until a run pairs every machine, the repos you ticked are saved in the temp
+dir (`git-sync-install-repos-<uid>.json`) and reused without asking, so you
+can re-run `install` while fixing ssh without re-picking them; it is removed
+once every machine is reachable and every pair connects.
 
 Re-running `install` adds to the existing mesh rather than replacing it - but
 only on the machine you run it on: it merges its own existing peer list with
