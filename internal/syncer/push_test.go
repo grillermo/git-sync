@@ -27,7 +27,7 @@ func TestPushSendsCommitsAndNotifiesThePeer(t *testing.T) {
 		t.Errorf("commit did not reach origin:\n%s", out)
 	}
 	calls := sb.SSHCalls()
-	for _, want := range []string{"tester@peer.example", "BatchMode=yes", "ConnectTimeout=5", "receive 'group/proj'"} {
+	for _, want := range []string{"tester@peer.example", "BatchMode=yes", "ConnectTimeout=5", "ServerAliveInterval=", "receive 'group/proj'"} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("ssh call %q missing %q", calls, want)
 		}
