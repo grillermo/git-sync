@@ -216,7 +216,7 @@ func TestChooseReposReusesAPendingSelectionWithoutThePicker(t *testing.T) {
 	_ = savePending(sb.BaseDir, []string{"a"})
 
 	// No terminal: without the saved selection this would be an error.
-	got, err := chooseRepos(sb.BaseDir, false, "", false, io.Discard, io.Discard)
+	got, err := chooseRepos(sb.BaseDir, false, "", io.Discard, io.Discard)
 	if err != nil || !reflect.DeepEqual(got, []string{"a"}) {
 		t.Errorf("chooseRepos = %v, %v; want the saved [a]", got, err)
 	}

@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -58,8 +57,6 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	all := fs.Bool("all", false, "sync every repo found; skip the picker")
 	only := fs.String("repos", "", "comma-separated repos to sync; skips the picker")
 	noPeer := fs.Bool("no-peer", false, "do not provision any peer machine")
-	pick := fs.Bool("pick", false,
-		"open the repo picker even when a previous unfinished install saved a selection")
 	discover := fs.Bool("discover", false,
 		"look for more machines on this network even when peers are already configured")
 	noInitialSync := fs.Bool("no-initial-sync", false,
@@ -167,7 +164,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "choosing repos under %s\n", base)
-	repos, err := chooseRepos(base, *all, *only, *pick, stdout, stderr)
+	repos, err := chooseRepos(base, *all, *only, stdout, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -436,9 +433,9 @@ func levelRepos(cfg config.Config, peers []config.Peer, repos []string, stdout, 
 // A nil slice with a nil error means the user cancelled.
 //
 // A selection made in the picker is saved (see pendingRepos) until a run
-// pairs every machine, and reused without asking in between; --pick reopens
-// the picker with it pre-ticked.
-func chooseRepos(base string, all bool, only string, pick bool, stdout, stderr io.Writer) ([]string, error) {
+// pairs every machine; in between, the picker opens with it pre-ticked, and
+// without a terminal it is reused as is.
+func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) ([]string, error) {
 	discovered, err := scan.Repos(base, cfgRemotes())
 	if err != nil {
 		return nil, fmt.Errorf("scanning %s: %w", base, err)
@@ -458,30 +455,24 @@ func chooseRepos(base string, all bool, only string, pick bool, stdout, stderr i
 	}
 
 	pending := loadPending(base)
-	if pending != nil && !pick {
-		fmt.Fprintf(stdout, "using the %d repos you picked last time, saved until every machine "+
-			"pairs (%s); pass --pick to choose again\n", len(pending), pendingPath())
-		return pending, nil
-	}
 
-	// Pre-tick whatever is already being synced, so a re-run amends rather
-	// than starts over - plus whatever an unfinished run picked.
+	// Whatever is already being synced stays ticked, so a re-run amends
+	// rather than starts over; whatever an unfinished run picked is ticked
+	// too, but among the new repos - it is not syncing yet.
 	var current []string
 	if cfg, cfgErr := config.Load(); cfgErr == nil {
 		current = cfg.Repos
 	}
-	for _, r := range pending {
-		if !slices.Contains(current, r) {
-			current = append(current, r)
-		}
-	}
 
 	if !isTTY(stdout) {
+		if pending != nil {
+			return pending, nil
+		}
 		return nil, errors.New(
 			"no terminal for the repo picker: pass --all or --repos a,b,c")
 	}
 
-	repos, ok, err := picker.Choose(discovered, current)
+	repos, ok, err := picker.Choose(discovered, current, pending)
 	if err != nil || !ok {
 		return nil, err
 	}

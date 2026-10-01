@@ -25,11 +25,17 @@ const (
 const savedPrefix = "saved\n"
 
 // Rows builds the list. Order is deliberate: new repos first, because on a
-// re-run they are the only thing that changed.
-func Rows(discovered []scan.Repo, selected []string) []chicle.Row {
+// re-run they are the only thing that changed. selected is what is already
+// being synced; preticked is what a previous, unfinished install picked -
+// ticked, but still a new repo the user can untick, not one already syncing.
+func Rows(discovered []scan.Repo, selected, preticked []string) []chicle.Row {
 	inConfig := map[string]bool{}
 	for _, r := range selected {
 		inConfig[r] = true
+	}
+	ticked := map[string]bool{}
+	for _, r := range preticked {
+		ticked[r] = true
 	}
 	seen := map[string]bool{}
 
@@ -43,7 +49,7 @@ func Rows(discovered []scan.Repo, selected []string) []chicle.Row {
 			row.Section, row.Ticked, row.Locked = sectionSyncing, true, true
 			syncing = append(syncing, row)
 		} else {
-			row.Section = sectionNew
+			row.Section, row.Ticked = sectionNew, ticked[r.Rel]
 			news = append(news, row)
 		}
 	}
@@ -70,11 +76,11 @@ func Rows(discovered []scan.Repo, selected []string) []chicle.Row {
 }
 
 // Config is the whole picker, ready for chicle.Run.
-func Config(discovered []scan.Repo, selected []string) chicle.Config {
+func Config(discovered []scan.Repo, selected, preticked []string) chicle.Config {
 	return chicle.Config{
 		Title:       "SELECT REPOS TO SYNC",
 		Columns:     []chicle.Column{{Title: "REPO", Width: 32}, {Title: "REMOTE"}},
-		Rows:        Rows(discovered, selected),
+		Rows:        Rows(discovered, selected, preticked),
 		MultiSelect: true,
 		Actions: []chicle.Action{
 			{Label: "Save", Run: func(s chicle.Selection) chicle.Outcome {
@@ -90,16 +96,17 @@ func Config(discovered []scan.Repo, selected []string) chicle.Config {
 }
 
 // Choose runs the picker on the terminal. ok is false when the user cancelled.
-func Choose(discovered []scan.Repo, selected []string) (repos []string, ok bool, err error) {
-	return choose(chicle.Run, discovered, selected)
+func Choose(discovered []scan.Repo, selected, preticked []string) (repos []string, ok bool, err error) {
+	return choose(chicle.Run, discovered, selected, preticked)
 }
 
-func choose(run func(chicle.Config) (string, error), discovered []scan.Repo, selected []string) ([]string, bool, error) {
+func choose(run func(chicle.Config) (string, error), discovered []scan.Repo,
+	selected, preticked []string) ([]string, bool, error) {
 	if len(discovered)+len(selected) == 0 {
 		return nil, false, errors.New(
 			"No git repos found under that directory. Clone something under it, then run install again.")
 	}
-	res, err := run(Config(discovered, selected))
+	res, err := run(Config(discovered, selected, preticked))
 	if err != nil {
 		return nil, false, err
 	}

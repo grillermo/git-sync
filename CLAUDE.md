@@ -230,7 +230,7 @@ Package layering, leaves to composition:
 
 `cmd/git-sync/pending.go` saves the picker's repo selection in the temp
 dir until a run pairs every machine, so repeated installs while fixing ssh
-reuse it instead of reopening the picker (`--pick` reopens it).
+reopen the picker with it pre-ticked (and reuse it as is without a terminal).
 `testutil.NewSandbox` points `TMPDIR` into the sandbox for that reason.
 
 Runtime layout under `~/.gitsync/` (or `$GITSYNC_HOME`): `bin/git-sync` (the

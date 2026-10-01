@@ -40,7 +40,7 @@ func rowFor(t *testing.T, rows []chicle.Row, rel string) chicle.Row {
 func text(r chicle.Row) string { return strings.Join(r.Cols, " ") }
 
 func TestFirstInstallEverythingIsUntickedAndUnsectioned(t *testing.T) {
-	rows := Rows(found("notes", "work/api"), nil)
+	rows := Rows(found("notes", "work/api"), nil, nil)
 	for _, r := range rows {
 		if r.Ticked || r.Locked {
 			t.Errorf("%s: ticked=%v locked=%v, want neither on a first install", r.Key, r.Ticked, r.Locked)
@@ -53,7 +53,7 @@ func TestFirstInstallEverythingIsUntickedAndUnsectioned(t *testing.T) {
 
 func TestNewReposComeFirstAndAlreadySyncingAreLockedAndTicked(t *testing.T) {
 	// zzz-new sorts last alphabetically but is the only thing that changed.
-	rows := Rows(found("notes", "work/api", "zzz-new"), []string{"notes", "work/api"})
+	rows := Rows(found("notes", "work/api", "zzz-new"), []string{"notes", "work/api"}, nil)
 
 	if got, want := keys(rows), []string{"zzz-new", "notes", "work/api"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
@@ -68,10 +68,26 @@ func TestNewReposComeFirstAndAlreadySyncingAreLockedAndTicked(t *testing.T) {
 	}
 }
 
+func TestAnUnfinishedSelectionIsTickedAmongTheNewRepos(t *testing.T) {
+	// A repo an earlier, unpaired install picked is not syncing yet: it is
+	// ticked but stays under NEW, unlocked, so the user can still untick it.
+	rows := Rows(found("notes", "picked", "other"), []string{"notes"}, []string{"picked"})
+
+	if r := rowFor(t, rows, "picked"); !r.Ticked || r.Locked || r.Section != "NEW" {
+		t.Errorf("picked = %+v, want ticked, unlocked, NEW", r)
+	}
+	if r := rowFor(t, rows, "other"); r.Ticked {
+		t.Errorf("other = %+v, want unticked", r)
+	}
+	if r := rowFor(t, rows, "notes"); r.Section != "ALREADY SYNCING" {
+		t.Errorf("notes = %+v, want ALREADY SYNCING", r)
+	}
+}
+
 func TestMissingReposAreKeptTickedButNotLocked(t *testing.T) {
 	// work/gone is in the config but the scan did not find it - an unmounted
 	// volume, say. It must not be silently dropped.
-	rows := Rows(found("notes"), []string{"notes", "work/gone"})
+	rows := Rows(found("notes"), []string{"notes", "work/gone"}, nil)
 
 	r := rowFor(t, rows, "work/gone")
 	if !r.Ticked {
@@ -95,14 +111,14 @@ func TestMissingReposAreKeptTickedButNotLocked(t *testing.T) {
 }
 
 func TestRowNamesTheRemoteItWouldSyncThrough(t *testing.T) {
-	rows := Rows([]scan.Repo{{Rel: "gh", Commits: 3, Remote: "github", RemoteURL: "u"}}, nil)
+	rows := Rows([]scan.Repo{{Rel: "gh", Commits: 3, Remote: "github", RemoteURL: "u"}}, nil, nil)
 	if got := text(rows[0]); !strings.Contains(got, "github") || !strings.Contains(got, "3 commits") {
 		t.Errorf("row should name the remote and commit count: %q", got)
 	}
 }
 
 func TestARepoWithNoRemoteIsFlaggedButStillPickable(t *testing.T) {
-	rows := Rows([]scan.Repo{{Rel: "solo", Commits: 3}}, nil)
+	rows := Rows([]scan.Repo{{Rel: "solo", Commits: 3}}, nil, nil)
 	if got := text(rows[0]); !strings.Contains(got, "no remote") {
 		t.Errorf("a repo that cannot sync must say why: %q", got)
 	}
@@ -112,7 +128,7 @@ func TestARepoWithNoRemoteIsFlaggedButStillPickable(t *testing.T) {
 }
 
 func TestRowsAreInOneColumnPerConfigColumn(t *testing.T) {
-	cfg := Config(found("a"), nil)
+	cfg := Config(found("a"), nil, nil)
 	for _, r := range cfg.Rows {
 		if len(r.Cols) != len(cfg.Columns) {
 			t.Errorf("%s has %d cells for %d columns", r.Key, len(r.Cols), len(cfg.Columns))
@@ -140,7 +156,7 @@ func run(t *testing.T, cfg chicle.Config, label string, ticked ...string) chicle
 
 func TestSavingReturnsTheTickedReposSorted(t *testing.T) {
 	// The result goes straight into config.toml; keep it deterministic.
-	cfg := Config(found("zzz", "aaa", "mmm"), nil)
+	cfg := Config(found("zzz", "aaa", "mmm"), nil, nil)
 	out := run(t, cfg, "Save", "zzz", "aaa", "mmm")
 	if !out.Done {
 		t.Fatal("Save must end the picker")
@@ -152,7 +168,7 @@ func TestSavingReturnsTheTickedReposSorted(t *testing.T) {
 }
 
 func TestSavingWithNothingTickedIsNotACancel(t *testing.T) {
-	out := run(t, Config(found("a"), nil), "Save")
+	out := run(t, Config(found("a"), nil, nil), "Save")
 	got, ok := decode(out.Result)
 	if !ok || len(got) != 0 {
 		t.Errorf("decode = %v, %v; want an empty, non-cancelled selection", got, ok)
@@ -160,7 +176,7 @@ func TestSavingWithNothingTickedIsNotACancel(t *testing.T) {
 }
 
 func TestCancelDecodesAsCancelled(t *testing.T) {
-	out := run(t, Config(found("a"), nil), "Cancel")
+	out := run(t, Config(found("a"), nil, nil), "Cancel")
 	if _, ok := decode(out.Result); ok {
 		t.Error("Cancel must not read as a save")
 	}
@@ -170,7 +186,7 @@ func TestCancelDecodesAsCancelled(t *testing.T) {
 }
 
 func TestPickerIsMultiSelect(t *testing.T) {
-	if !Config(found("a"), nil).MultiSelect {
+	if !Config(found("a"), nil, nil).MultiSelect {
 		t.Error("choosing repos needs checkboxes")
 	}
 }
@@ -179,7 +195,7 @@ func TestEmptyScanWithNothingConfiguredIsAnError(t *testing.T) {
 	_, _, err := choose(func(chicle.Config) (string, error) {
 		t.Fatal("there is nothing to pick, the UI must not open")
 		return "", nil
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "No git repos") {
 		t.Errorf("err = %v, want a message saying no repos were found", err)
 	}
@@ -188,14 +204,14 @@ func TestEmptyScanWithNothingConfiguredIsAnError(t *testing.T) {
 func TestChooseReturnsWhatTheUIReturned(t *testing.T) {
 	sel, ok, err := choose(func(cfg chicle.Config) (string, error) {
 		return encode([]string{"b", "a"}), nil
-	}, found("a", "b"), nil)
+	}, found("a", "b"), nil, nil)
 	if err != nil || !ok || !reflect.DeepEqual(sel, []string{"a", "b"}) {
 		t.Errorf("choose = %v, %v, %v; want [a b], true, nil", sel, ok, err)
 	}
 }
 
 func TestChooseReportsCancel(t *testing.T) {
-	_, ok, err := choose(func(chicle.Config) (string, error) { return "", nil }, found("a"), nil)
+	_, ok, err := choose(func(chicle.Config) (string, error) { return "", nil }, found("a"), nil, nil)
 	if err != nil || ok {
 		t.Errorf("ok=%v err=%v, want a clean cancel", ok, err)
 	}
