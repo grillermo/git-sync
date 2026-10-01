@@ -91,6 +91,7 @@ func Path() string         { return filepath.Join(Home(), "config.toml") }
 func ActivityPath() string { return filepath.Join(Home(), "activity.jsonl") }
 func DebugLogPath() string { return filepath.Join(Home(), "debug.log") }
 func LocksDir() string     { return filepath.Join(Home(), "locks") }
+func PendingDir() string   { return filepath.Join(Home(), "pending") }
 func BinPath() string      { return filepath.Join(Home(), "bin", "git-sync") }
 func HooksDir() string     { return filepath.Join(Home(), "hooks") }
 func AskpassPath() string  { return filepath.Join(Home(), "askpass") }

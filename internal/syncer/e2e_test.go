@@ -544,3 +544,64 @@ func waitForEvent(t *testing.T, op activity.Op, status activity.Status, msgSubst
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// A machine that missed telling a peer about a commit (the peer was off)
+// sends it the moment it is itself notified of anything: being notified
+// proves it is online again, and receive starts a background retry.
+func TestEndToEndReceiveDeliversTheBacklogOfAMachineThatWasOffline(t *testing.T) {
+	bin := buildBinary(t)
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+
+	b := newMachine(t, bin, "b.local")
+	c := newMachine(t, bin, "c.local")
+	b.clone(t, sb, "group/proj")
+	cRepo := c.clone(t, sb, "group/proj")
+	testutil.SaveConfigWithPeers(t, sb, []config.Peer{{Host: "b.local", User: "tester"}}, []string{"group/proj"})
+	b.saveConfig(t, []string{"group/proj"}, []config.Peer{{Host: "c.local", User: "tester"}})
+	c.saveConfig(t, []string{"group/proj"}, []config.Peer{{Host: "b.local", User: "tester"}})
+	installLoopbackSSH(t, sb, b, c)
+
+	// b once failed to reach c about group/proj.
+	backlog := filepath.Join(b.Gitsync, "pending", "notify", "c.local")
+	testutil.MkdirAll(t, backlog)
+	testutil.WriteFileIn(t, backlog, "group%2Fproj", "")
+
+	// a only tells b. c learns of the commit solely through b's retry.
+	testutil.Commit(t, sb, repo, "relayed")
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Fatalf("Push = %d, want 0", code)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if out := sb.Git(cRepo, "log", "--oneline", "-1"); strings.Contains(out, "relayed") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("c never caught up through b's retry; b events: %+v", b.events(t))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// b's retry logs the notify, its last write, only once c's receive has
+	// returned - after c caught up. Wait for it, both to check it and so the
+	// detached retry is done before the temp dirs go.
+	for !hasEvent(b.events(t), activity.OpNotify, activity.StatusOK, "c.local") {
+		if time.Now().After(deadline) {
+			t.Fatalf("b never logged notifying c; b events: %+v", b.events(t))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if entries, _ := os.ReadDir(backlog); len(entries) != 0 {
+		t.Errorf("b's backlog entry was not cleared after delivery: %v", entries)
+	}
+}
+
+func hasEvent(events []activity.Event, op activity.Op, status activity.Status, msgSubstr string) bool {
+	for _, e := range events {
+		if e.Op == op && e.Status == status && strings.Contains(e.Msg, msgSubstr) {
+			return true
+		}
+	}
+	return false
+}

@@ -828,5 +828,23 @@ func cmdReceive(args []string, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: git-sync receive <repo> [--from <host>]")
 		return 2
 	}
-	return syncer.Receive(repo, *from)
+	code := syncer.Receive(repo, *from)
+
+	// Being notified proves this machine is back online, so anything it
+	// failed to deliver while it was away can go now - in the background, so
+	// the notifying peer's ssh is not held open by it.
+	if syncer.HasPending() {
+		if self, err := os.Executable(); err == nil {
+			_ = syncer.SpawnRetry(self)
+		}
+	}
+	return code
+}
+
+func cmdRetry(args []string, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: git-sync retry")
+		return 2
+	}
+	return syncer.Retry()
 }

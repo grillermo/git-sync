@@ -311,3 +311,28 @@ func TestSummaryKeepsALineOneDiagnosisEvenWhenALaterLineMatches(t *testing.T) {
 		t.Errorf("Summary dropped the line-one diagnosis: %q", got)
 	}
 }
+
+func TestIsOfflineTellsUnreachableFromRefused(t *testing.T) {
+	for _, msg := range []string{
+		"git push origin main: exit status 128: fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com",
+		"ssh: connect to host github.com port 22: Network is unreachable",
+		"ssh: connect to host 10.0.0.9 port 22: Operation timed out",
+		"fatal: unable to access 'http://127.0.0.1:1/a.git/': Failed to connect to 127.0.0.1 port 1: Connection refused",
+	} {
+		if !gitcmd.IsOffline(errors.New(msg)) {
+			t.Errorf("IsOffline(%q) = false", msg)
+		}
+	}
+	for _, msg := range []string{
+		"! [rejected] main -> main (fetch first)",
+		"fatal: 'gone.git' does not appear to be a git repository",
+		"git@github.com: Permission denied (publickey).",
+	} {
+		if gitcmd.IsOffline(errors.New(msg)) {
+			t.Errorf("IsOffline(%q) = true", msg)
+		}
+	}
+	if gitcmd.IsOffline(nil) {
+		t.Error("IsOffline(nil) = true")
+	}
+}

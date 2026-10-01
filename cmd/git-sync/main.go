@@ -24,7 +24,8 @@ func main() {
 }
 
 // run dispatches a subcommand and returns the process exit code.
-// Exit codes: 0 ok, 1 failure, 2 usage error, 3 repo not on this machine.
+// Exit codes: 0 ok, 1 failure, 2 usage error, 3 repo not on this machine,
+// 4 receive could not fetch.
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
@@ -48,6 +49,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdPush(args[1:], stderr)
 	case "receive":
 		return cmdReceive(args[1:], stderr)
+	case "retry":
+		return cmdRetry(args[1:], stderr)
 
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)

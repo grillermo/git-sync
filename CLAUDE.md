@@ -100,13 +100,13 @@ special-casing, for any number of machines in the mesh.
 
 ## Architecture
 
-Seven subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
+Eight subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
 actual command bodies live in `cmd/git-sync/stubs.go` — despite the
 filename, that file is not stub code, it's the real implementation of every
 `cmdX` function). Four are for humans (`install`, `uninstall`, `report`,
-`unlock` — clears a stuck receiver lock by hand); three are invoked by
+`unlock` — clears a stuck receiver lock by hand); four are invoked by
 machines and deliberately hidden from `-h` output (`hook`, `push`,
-`receive`). Key-only ssh auth means nothing else needs to shell out to
+`receive`, `retry`). Key-only ssh auth means nothing else needs to shell out to
 git-sync itself, so there is no `askpass`/`savepass` anymore.
 
 Package layering, leaves to composition:
@@ -155,8 +155,20 @@ Package layering, leaves to composition:
     git-sync never blocks on its own lock.
   - `push.go`: pushes the current branch to the resolved remote, then SSHes
     every peer in the mesh in parallel to run its own `receive --from
-    <this-machine>`. No retry queue by design — a failed push or unreachable
-    peer just gets carried by the next commit.
+    <this-machine>`. A rejected push is not retried (it needs a human, and
+    the next commit in that repo tries again).
+  - `pending.go`: the offline-resilience queue. A delivery that failed only
+    because a machine was out of reach — a push `gitcmd.IsOffline` reads as
+    unreachable, a notify where ssh exits 255, or a peer whose receive could
+    not fetch (`ExitFetchFailed`, 4) — is recorded as an empty marker file
+    (`pending/push/<rel>`, `pending/notify/<host>/<rel>`, rel path-escaped;
+    atomic create/remove, so no lock). Every later `push` of *any* repo
+    retries the backlog afterwards (skipping a peer it just found down), and
+    `receive` spawns a detached `retry` when the backlog is non-empty, since
+    being notified proves this machine is back online. Entries for repos no
+    longer selected are dropped. `sshx` adds `ServerAliveInterval`/`CountMax`
+    so a peer that vanishes mid-receive turns into exit 255 after ~1 minute
+    instead of hanging the background push.
   - `receive.go`: `Receive(rel, from)` acquires the lock (recording `from`,
     the notifying machine, in the `Owner`), fetches, stashes if dirty,
     fast-forwards, unstashes — unconditionally, whether or not the
@@ -241,7 +253,7 @@ Runtime layout under `~/.gitsync/` (or `$GITSYNC_HOME`): `bin/git-sync` (the
 copy the hooks and ssh invoke — re-copying on install can't race a commit
 mid-execution), `hooks/{post-commit,pre-commit,pre-push}` (shell shims, not
 the binary itself, for the same non-racing reason — each just execs `git-sync
-hook <name>`), `config.toml`, `activity.jsonl`, `debug.log`, `locks/`. No
+hook <name>`), `config.toml`, `activity.jsonl`, `debug.log`, `locks/`, `pending/`. No
 `askpass`: ssh is key-only now, so there is nothing for one to feed.
 
 ## Key invariants worth preserving

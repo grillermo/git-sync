@@ -150,12 +150,24 @@ func selectedRel(dir string) (string, bool) {
 // this design exists to avoid. So the child gets its own session and its
 // stdio pointed at the debug log.
 func SpawnDetached(self, rel string) error {
+	return spawnDetached(self, "push", rel)
+}
+
+// SpawnRetry starts `self retry` detached, the same way SpawnDetached does
+// for a push. Receive runs under the notifying peer's ssh session, and that
+// session lasts until every inherited stdio handle is closed - so a retry that
+// kept them would hold the peer's push open for as long as it ran.
+func SpawnRetry(self string) error {
+	return spawnDetached(self, "retry")
+}
+
+func spawnDetached(self string, args ...string) error {
 	logf, err := os.OpenFile(config.DebugLogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		logf = nil
 	}
 
-	cmd := exec.Command(self, "push", rel)
+	cmd := exec.Command(self, args...)
 	cmd.Stdin = nil
 	if logf != nil {
 		cmd.Stdout, cmd.Stderr = logf, logf

@@ -70,6 +70,42 @@ func Summary(err error) string {
 	return ""
 }
 
+// offlineMarkers are what git, curl and ssh print when the remote could not be
+// reached at all, as opposed to reached and refused.
+var offlineMarkers = []string{
+	"Could not resolve host", // curl, ssh: "Could not resolve hostname"
+	"Temporary failure in name resolution",
+	"nodename nor servname",     // macOS resolver
+	"Name or service not known", // glibc resolver
+	"Connection refused",
+	"Connection timed out",
+	"Operation timed out",
+	"Network is unreachable",
+	"No route to host",
+	"Host is down",
+	"Failed to connect to", // curl
+	"Connection reset by peer",
+	"Connection closed by remote host",
+}
+
+// IsOffline reports whether err looks like the remote was out of reach, which
+// a later attempt can fix on its own. Unlike Summary this does decide
+// behaviour: an offline push is queued for retry. A misread costs little -
+// an offline failure read as a refusal is simply not retried (the old
+// behaviour), and a refusal read as offline fails again on retry.
+func IsOffline(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, m := range offlineMarkers {
+		if strings.Contains(msg, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // diagnosticMarkers are the prefixes git puts on the lines that say what went
 // wrong. "To " is absent on purpose: it introduces the push transport banner,
 // which is noise, and is skipped by simply never matching.

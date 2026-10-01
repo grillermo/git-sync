@@ -19,7 +19,14 @@ import (
 // that apart from a real failure.
 const ExitRepoNotHere = 3
 
+// ExitFetchFailed is receive's exit code for "notified, but could not fetch
+// from the remote". The peer is up yet missed the commit, so push queues it
+// for retry just as it does an unreachable peer.
+const ExitFetchFailed = 4
+
 // Push pushes rel to the shared remote and then tells the peer to pull it.
+// Afterwards it retries whatever earlier runs failed to deliver because a
+// machine was offline (see pending.go).
 // Runs detached in the background; its only output is the activity log.
 // Returns a process exit code.
 func Push(rel string) int {
@@ -38,6 +45,14 @@ func Push(rel string) int {
 		return 1
 	}
 
+	reached := pushRepo(cfg, rel)
+	retryPending(cfg, rel, reached)
+	return 0
+}
+
+// pushRepo pushes one repo and notifies every peer about it. It returns, per
+// peer host, whether that peer could be reached - nil if no peer was tried.
+func pushRepo(cfg config.Config, rel string) map[string]bool {
 	dir := cfg.RepoPath(rel)
 
 	// Everything below needs a branch to name on the remote, so a detached
@@ -48,7 +63,7 @@ func Push(rel string) int {
 			Repo: rel, Op: activity.OpPush, Status: activity.StatusSkip,
 			Msg: "detached HEAD, nothing to push",
 		})
-		return 0
+		return nil
 	}
 
 	// The remote is the transport: no remote, no sync, and no point telling
@@ -60,44 +75,62 @@ func Push(rel string) int {
 			Repo: rel, Op: activity.OpPush, Status: activity.StatusWarn,
 			Branch: branch, Msg: "no remote to sync through: " + gitcmd.Summary(err),
 		})
-		return 0
+		return nil
 	}
 
-	// No retry queue, by design: if we are offline or the push is rejected,
-	// the next commit pushes both commits anyway.
+	// Offline: remember it, and the next sync run of any repo here pushes it.
+	// Rejected: no retry - a rejection needs a human, and the next commit in
+	// this repo tries again anyway.
 	if _, err := gitcmd.Push(dir, remote, branch); err != nil {
+		msg := "push to " + remote + " failed: " + gitcmd.Summary(err)
+		if gitcmd.IsOffline(err) {
+			markPending(pendingPush, rel)
+			msg += " (will retry)"
+		} else {
+			clearPending(pendingPush, rel)
+		}
 		_ = activity.Append(activity.Event{
 			Repo: rel, Op: activity.OpPush, Status: activity.StatusError,
-			Branch: branch, Msg: "push to " + remote + " failed: " + gitcmd.Summary(err),
+			Branch: branch, Msg: msg,
 		})
-		return 0
+		return nil
 	}
+	clearPending(pendingPush, rel)
 	_ = activity.Append(activity.Event{
 		Repo: rel, Op: activity.OpPush, Status: activity.StatusOK,
 		Branch: branch, Msg: "pushed " + branch + " to " + remote,
 	})
 
-	notifyAll(cfg, rel, branch)
-	return 0
+	return notifyAll(cfg, rel, branch)
 }
 
 // notifyAll tells every other machine to pull what we just pushed. The peers
 // are independent: one unreachable machine must not delay or affect the
 // others, so they go out concurrently and each gets its own event.
-func notifyAll(cfg config.Config, rel, branch string) {
-	var wg sync.WaitGroup
+func notifyAll(cfg config.Config, rel, branch string) map[string]bool {
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		reached = map[string]bool{}
+	)
 	for _, p := range cfg.PeerList() {
 		wg.Add(1)
 		go func(p config.Peer) {
 			defer wg.Done()
-			notifyPeer(cfg, p, rel, branch)
+			ok := notifyPeer(cfg, p, rel, branch)
+			mu.Lock()
+			reached[p.Host] = ok
+			mu.Unlock()
 		}(p)
 	}
 	wg.Wait()
+	return reached
 }
 
-// notifyPeer asks one peer to run its own receive for this repo.
-func notifyPeer(cfg config.Config, p config.Peer, rel, branch string) {
+// notifyPeer asks one peer to run its own receive for this repo. A peer that
+// is offline, or up but unable to fetch, is queued for retry. It returns
+// whether the peer got the commit or definitively did not need it.
+func notifyPeer(cfg config.Config, p config.Peer, rel, branch string) bool {
 	self, _ := os.Hostname()
 	remote := fmt.Sprintf("~/.gitsync/bin/git-sync receive '%s' --from '%s'", rel, sanitizeHost(self))
 
@@ -105,19 +138,30 @@ func notifyPeer(cfg config.Config, p config.Peer, rel, branch string) {
 	out, err := cmd.CombinedOutput()
 
 	ev := activity.Event{Repo: rel, Op: activity.OpNotify, Branch: branch, Peer: p.Host}
+	delivered := true
 	switch code := exitCode(err); {
 	case err == nil:
 		ev.Status, ev.Msg = activity.StatusOK, "peer "+p.Host+" synced"
 	case code == ExitRepoNotHere:
 		// Expected and harmless: the peer has never cloned this repo. No
-		// auto-clone, no retry - just say so plainly rather than claiming a
-		// sync that never happened.
+		// retry - just say so plainly rather than claiming a sync that never
+		// happened.
 		ev.Status, ev.Msg = activity.StatusSkip, "peer "+p.Host+" has no copy of this repo, nothing to sync"
 	case code == 255:
-		ev.Status, ev.Msg = activity.StatusError, "peer "+p.Host+" unreachable"
+		ev.Status, ev.Msg = activity.StatusError, "peer "+p.Host+" unreachable, will retry"
+		delivered = false
+	case code == ExitFetchFailed:
+		ev.Status, ev.Msg = activity.StatusError, "peer "+p.Host+" could not fetch, will retry"
+		delivered = false
 	default:
+		// A failure on the peer's side that retrying will not fix.
 		ev.Status = activity.StatusError
 		ev.Msg = fmt.Sprintf("peer %s receive failed (exit %d)", p.Host, code)
+	}
+	if delivered {
+		clearPending(pendingNotify, p.Host, rel)
+	} else {
+		markPending(pendingNotify, p.Host, rel)
 	}
 	// activity.Append is safe to call concurrently without a lock: the log
 	// is append-only and each line is kept under PIPE_BUF, so concurrent
@@ -126,6 +170,7 @@ func notifyPeer(cfg config.Config, p config.Peer, rel, branch string) {
 	if err != nil {
 		activity.AppendDebug("ssh " + p.Target() + ": " + strings.TrimSpace(string(out)))
 	}
+	return delivered
 }
 
 // sanitizeHost reduces a hostname to the characters that are safe both in a

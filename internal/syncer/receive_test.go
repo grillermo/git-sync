@@ -349,3 +349,16 @@ func TestReceiveConcurrentRunsNeverLoseADirtyTree(t *testing.T) {
 		t.Errorf("nothing stranded in the stash, got:\n%s", out)
 	}
 }
+
+func TestReceiveReportsAFailedFetch(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.Git(repo, "remote", "set-url", "origin", filepath.Join(sb.Home, "gone.git"))
+
+	// Not 0: the notifier queues the notification for retry on this code.
+	if code := syncer.Receive("group/proj", "peer.example"); code != syncer.ExitFetchFailed {
+		t.Errorf("Receive = %d, want ExitFetchFailed", code)
+	}
+	testutil.AssertEvent(t, activity.OpReceive, activity.StatusError, "fetch")
+}

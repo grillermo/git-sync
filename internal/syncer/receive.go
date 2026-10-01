@@ -19,7 +19,8 @@ import (
 // It never commits and never pushes, so it cannot re-trigger the peer's
 // post-commit hook: there is no feedback loop between the two machines.
 //
-// Returns a process exit code; ExitRepoNotHere when this machine has no copy.
+// Returns a process exit code; ExitRepoNotHere when this machine has no copy,
+// ExitFetchFailed when it could not fetch.
 func Receive(rel, from string) int {
 	from = sanitizeHost(from)
 	cfg, err := config.Load()
@@ -125,8 +126,10 @@ func syncRepo(cfg config.Config, rel, dir string) int {
 	}
 
 	if err := gitcmd.Fetch(dir, remote); err != nil {
+		// Not 0: the notifier must know this machine missed the commit, so it
+		// can queue the notification and try again later.
 		log(activity.StatusError, branch, "fetch from "+remote+" failed: "+gitcmd.Summary(err))
-		return 0
+		return ExitFetchFailed
 	}
 
 	// Checked before the merge: a missing remote-tracking ref would otherwise
