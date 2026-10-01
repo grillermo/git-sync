@@ -477,6 +477,42 @@ func TestEndToEndInstalledHookFiresOnRealCommit(t *testing.T) {
 	}
 }
 
+// TestEndToEndInstallClonesARepoThePeerIsMissing confirms install clones a
+// selected repo onto a machine that does not have it, from the same remote,
+// so it syncs from the first commit rather than being skipped forever.
+func TestEndToEndInstallClonesARepoThePeerIsMissing(t *testing.T) {
+	bin := buildBinary(t)
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+
+	peer := newMachine(t, bin, "peerhost")
+	installLoopbackSSH(t, sb, peer)
+
+	install := exec.Command(bin, "install", "--peer-host", "peerhost", "--peer-user", "peeruser", "--all", sb.BaseDir)
+	install.Env = os.Environ()
+	out, err := install.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git-sync install failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "cloned") {
+		t.Errorf("install did not report the clone:\n%s", out)
+	}
+
+	peerRepo := filepath.Join(peer.BaseDir, "group/proj")
+	if _, err := os.Stat(filepath.Join(peerRepo, ".git")); err != nil {
+		t.Fatalf("group/proj was not cloned on the peer: %v\n%s", err, out)
+	}
+
+	testutil.Commit(t, sb, repo, "after the clone")
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(sb.Git(peerRepo, "log", "--oneline"), "after the clone") {
+		if time.Now().After(deadline) {
+			t.Fatalf("the commit never reached the peer's new clone; peer events: %+v", peer.events(t))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // mustReadActivity reads this process's own activity log (machine A's).
 func mustReadActivity(t *testing.T) []activity.Event {
 	t.Helper()

@@ -200,7 +200,11 @@ Package layering, leaves to composition:
   never cross-compiles, and a missing build is an error naming the `./build`
   target to run), `repocheck.go` (asks each reachable peer which selected repos it
   actually has, and whether they point at the same remote — a mismatched
-  pair silently never converges otherwise), `keycheck.go` (`CheckKeys` probes
+  pair silently never converges otherwise), `clone.go` (`ClonePeerRepos`:
+  a repo that check finds *missing* on a peer is cloned there after the
+  install, from this machine's remote URL under this machine's remote name
+  and branch, before levelling — never over an existing path, never with a
+  prompt; `--no-clone` skips it), `keycheck.go` (`CheckKeys` probes
   every *ordered pair* of machines in the mesh, not just this machine to each
   peer — a peer-to-peer check runs by sshing onto `from` and having it in
   turn `ssh ... to true`; `RenderKeyChecks` prints the pairs that fail with

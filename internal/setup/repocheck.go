@@ -22,10 +22,14 @@ const (
 )
 
 // RepoWant is one selected repo as this machine sees it: the path, and the
-// remote URL we sync it through. The peer has to match both.
+// remote URL we sync it through. The peer has to match both. Remote and
+// Branch are this machine's remote name and current branch, which a peer
+// missing the repo is cloned with.
 type RepoWant struct {
 	Rel       string
 	RemoteURL string
+	Remote    string
+	Branch    string
 }
 
 // RepoCheck is the peer's answer for one selected repo.
@@ -34,7 +38,12 @@ type RepoCheck struct {
 	State         RepoState
 	RemoteURL     string // ours
 	PeerRemoteURL string // theirs, when they have one
+	Want          RepoWant
 }
+
+// WillClone reports whether install clones this repo on the peer: it is
+// missing there, and this machine knows where to clone it from.
+func (c RepoCheck) WillClone() bool { return c.State == RepoMissing && Clonable(c.Want) }
 
 // repoCheckMarker opens the remote script. It makes the command identifiable
 // in the debug log and in the ssh stub's recorded calls.
@@ -58,7 +67,7 @@ func CheckPeerReposWithRemotes(target, peerBase string, repos []RepoWant, remote
 	checks := make([]RepoCheck, len(repos))
 	var askable []string
 	for i, r := range repos {
-		checks[i] = RepoCheck{Rel: r.Rel, State: RepoUnchecked, RemoteURL: r.RemoteURL}
+		checks[i] = RepoCheck{Rel: r.Rel, State: RepoUnchecked, RemoteURL: r.RemoteURL, Want: r}
 		if !strings.Contains(r.Rel, "'") {
 			askable = append(askable, r.Rel)
 		}
@@ -186,15 +195,32 @@ done
 
 // RenderRepoChecks prints the mismatches and returns how many there were.
 // It always prints something: silence would read as "it did not look".
-func RenderRepoChecks(w io.Writer, peerHost, peerBase string, checks []RepoCheck) int {
-	var bad []RepoCheck
+// With clone set, a missing repo install can clone is listed as such and not
+// counted, since install fixes it rather than the user.
+func RenderRepoChecks(w io.Writer, peerHost, peerBase string, checks []RepoCheck, clone bool) int {
+	var bad, cloning []RepoCheck
 	for _, c := range checks {
-		if c.State != RepoPresent {
+		switch {
+		case c.State == RepoPresent:
+		case clone && c.WillClone():
+			cloning = append(cloning, c)
+		default:
 			bad = append(bad, c)
 		}
 	}
-	if len(bad) == 0 {
+	if len(bad) == 0 && len(cloning) == 0 {
 		fmt.Fprintf(w, "all %d selected repos are present on %s\n", len(checks), peerHost)
+		return 0
+	}
+
+	if len(cloning) > 0 {
+		fmt.Fprintf(w, "%d of %d selected repos are missing on %s and will be cloned there (%s):\n",
+			len(cloning), len(checks), peerHost, peerBase)
+		for _, c := range cloning {
+			fmt.Fprintf(w, "  %-13s %s from %s\n", "clone", c.Rel, c.RemoteURL)
+		}
+	}
+	if len(bad) == 0 {
 		return 0
 	}
 

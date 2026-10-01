@@ -410,7 +410,7 @@ func TestRenderRepoChecksListsOnlyTheMismatches(t *testing.T) {
 		{Rel: "scratch", State: setup.RepoNotAGitRepo},
 		{Rel: "gh", State: setup.RepoOtherRemote,
 			RemoteURL: "git@github.com:me/gh.git", PeerRemoteURL: "git@github.com:you/gh.git"},
-	})
+	}, false)
 	if n != 3 {
 		t.Errorf("mismatch count = %d, want 3", n)
 	}
@@ -432,7 +432,7 @@ func TestRenderRepoChecksSaysNothingWhenEverythingMatches(t *testing.T) {
 	var out strings.Builder
 	n := setup.RenderRepoChecks(&out, "peerbox", "/home/peer/code", []setup.RepoCheck{
 		{Rel: "notes", State: setup.RepoPresent},
-	})
+	}, false)
 	if n != 0 {
 		t.Errorf("mismatch count = %d, want 0", n)
 	}
@@ -445,10 +445,32 @@ func TestRenderRepoChecksExplainsTheConsequence(t *testing.T) {
 	// A list of names is not actionable. Say what will happen and what to do.
 	var out strings.Builder
 	setup.RenderRepoChecks(&out, "peerbox", "/home/peer/code",
-		[]setup.RepoCheck{{Rel: "work/api", State: setup.RepoMissing}})
+		[]setup.RepoCheck{{Rel: "work/api", State: setup.RepoMissing}}, false)
 	s := out.String()
 	if !strings.Contains(s, "will not sync") || !strings.Contains(s, "clone") {
 		t.Errorf("report should say it will not sync and that cloning fixes it:\n%s", s)
+	}
+}
+
+func TestRenderRepoChecksListsAClonableMissingRepoAsCloned(t *testing.T) {
+	// A missing repo install is about to clone is not a problem for the user,
+	// so it must not count towards the "continue anyway?" prompt - but it
+	// still has to be announced, since install is about to write on the peer.
+	var out strings.Builder
+	want := setup.RepoWant{Rel: "work/api", RemoteURL: "git@github.com:me/api.git", Remote: "origin"}
+	n := setup.RenderRepoChecks(&out, "peerbox", "/home/peer/code", []setup.RepoCheck{
+		{Rel: "work/api", State: setup.RepoMissing, RemoteURL: want.RemoteURL, Want: want},
+		{Rel: "local-only", State: setup.RepoMissing, Want: setup.RepoWant{Rel: "local-only"}},
+	}, true)
+	if n != 1 {
+		t.Errorf("mismatch count = %d, want 1 (only the repo with no remote)", n)
+	}
+	s := out.String()
+	if !strings.Contains(s, "will be cloned") || !strings.Contains(s, "git@github.com:me/api.git") {
+		t.Errorf("report should announce the clone and where from:\n%s", s)
+	}
+	if !strings.Contains(s, "local-only") {
+		t.Errorf("a missing repo with no remote cannot be cloned and must still be reported:\n%s", s)
 	}
 }
 

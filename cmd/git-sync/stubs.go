@@ -61,6 +61,8 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		"look for more machines on this network even when peers are already configured")
 	noInitialSync := fs.Bool("no-initial-sync", false,
 		"do not push/fast-forward the selected repos level with their remotes")
+	noClone := fs.Bool("no-clone", false,
+		"do not clone a selected repo onto a machine that does not have it")
 	selfHost := fs.String("self-host", "", "this machine's hostname, as the peer sees it")
 	selfUser := fs.String("self-user", "", "the account the peer should ssh back into")
 	peerBaseDir := fs.String("peer-base-dir", "",
@@ -176,11 +178,16 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 
 	// Step 5: ask each reachable peer which of the chosen repos it actually
 	// has, one machine at a time - the user can still quit here with q,
-	// before anything is written on either machine.
+	// before anything is written on either machine. A repo a peer is missing
+	// is cloned there once the install itself has succeeded (step 6a).
+	var clones []peerClones
 	if !*noPeer {
 		remotes := cfgRemotes()
 		wants := repoWants(config.Config{BaseDir: base, RemoteNames: remotes}, repos)
-		if !checkPeer(reachable, config.Config{BaseDir: base, RemoteNames: remotes}, wants, stdout, stderr) {
+		var ok bool
+		clones, ok = checkPeer(reachable, config.Config{BaseDir: base, RemoteNames: remotes}, wants,
+			!*noClone, stdout, stderr)
+		if !ok {
 			fmt.Fprintln(stdout, "cancelled; nothing was installed and the peers were not touched")
 			return 0
 		}
@@ -224,6 +231,12 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "not every machine is paired yet; your repo selection is kept in %s "+
 			"for the next run\n", pendingPath())
 	}
+
+	// Step 6a: clone every selected repo onto each machine that lacks it, so
+	// a repo that exists on only one machine is synced from the start rather
+	// than skipped on every commit. Before levelling, so the new clones are
+	// measured along with everything else.
+	cloneMissing(clones, stdout)
 
 	// Step 7 / stage "level": bring every machine up to the shared remote now
 	// that the hook is armed everywhere. A repo that was already out of step
@@ -497,11 +510,20 @@ func repoWants(cfg config.Config, repos []string) []setup.RepoWant {
 		w := setup.RepoWant{Rel: rel}
 		dir := cfg.RepoPath(rel)
 		if remote, err := gitcmd.ResolveRemote(dir, cfg.Remotes()); err == nil {
-			w.RemoteURL, _ = gitcmd.RemoteURL(dir, remote)
+			if w.RemoteURL, err = gitcmd.RemoteURL(dir, remote); err == nil {
+				w.Remote = remote
+			}
 		}
+		w.Branch, _ = gitcmd.CurrentBranch(dir)
 		out = append(out, w)
 	}
 	return out
+}
+
+// peerClones is the repos one peer is missing that install will clone there.
+type peerClones struct {
+	Target setup.PeerTarget
+	Repos  []setup.RepoWant
 }
 
 // checkPeer asks every reachable peer which selected repos it has, prints
@@ -509,8 +531,10 @@ func repoWants(cfg config.Config, repos []string) []setup.RepoWant {
 // quit here with q, just as in the picker: nothing has been written yet, on
 // any machine. Called once for the whole mesh so that a mismatch on one
 // machine is reported alongside the others rather than behind its own
-// separate confirm prompt.
-func checkPeer(peers []config.Peer, cfg config.Config, repos []setup.RepoWant, stdout, stderr io.Writer) bool {
+// separate confirm prompt. With clone set, it also returns the missing repos
+// to clone on each peer; those are announced but do not need confirming.
+func checkPeer(peers []config.Peer, cfg config.Config, repos []setup.RepoWant, clone bool,
+	stdout, stderr io.Writer) ([]peerClones, bool) {
 	var targets []setup.PeerTarget
 	for _, p := range peers {
 		fmt.Fprintf(stdout, "checking those repos on %s\n", p.Host)
@@ -525,23 +549,51 @@ func checkPeer(peers []config.Peer, cfg config.Config, repos []setup.RepoWant, s
 		targets = append(targets, setup.PeerTarget{Peer: p, BaseDir: peerBase})
 	}
 	if len(targets) == 0 {
-		return true
+		return nil, true
 	}
 
 	results := setup.CheckPeers(targets, repos, cfg.Remotes())
 	total := 0
+	var clones []peerClones
 	for _, pt := range targets {
-		total += setup.RenderRepoChecks(stdout, pt.Peer.Host, pt.BaseDir, results[pt.Peer.Host])
+		checks := results[pt.Peer.Host]
+		total += setup.RenderRepoChecks(stdout, pt.Peer.Host, pt.BaseDir, checks, clone)
+		if !clone {
+			continue
+		}
+		pc := peerClones{Target: pt}
+		for _, c := range checks {
+			if c.WillClone() {
+				pc.Repos = append(pc.Repos, c.Want)
+			}
+		}
+		if len(pc.Repos) > 0 {
+			clones = append(clones, pc)
+		}
 	}
 	if total == 0 {
-		return true
+		return clones, true
 	}
 	// Nothing to decide without a terminal: report and carry on, since the
 	// mismatch is informational and the rest of the install is still correct.
 	if !isTTY(stdout) {
-		return true
+		return clones, true
 	}
-	return confirm(stdout, os.Stdin, "continue anyway? [enter] continue, [q] quit: ")
+	return clones, confirm(stdout, os.Stdin, "continue anyway? [enter] continue, [q] quit: ")
+}
+
+// cloneMissing clones, on each peer, the selected repos checkPeer found it
+// missing. Never fatal: a clone that fails (the peer has no credentials for
+// the remote, say) is reported with what to do, and the rest of the mesh is
+// still installed.
+func cloneMissing(clones []peerClones, stdout io.Writer) {
+	for _, pc := range clones {
+		fmt.Fprintf(stdout, "cloning %d missing repo(s) on %s\n", len(pc.Repos), pc.Target.Peer.Host)
+		// An unreachable peer already marks every result, so the error adds
+		// nothing the rendered results do not say.
+		results, _ := setup.ClonePeerRepos(pc.Target.Peer.Target(), pc.Target.BaseDir, pc.Repos)
+		setup.RenderCloneResults(stdout, pc.Target.Peer.Host, results)
+	}
 }
 
 // confirm returns false only for an explicit quit. q, Q and EOF quit; anything
