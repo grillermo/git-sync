@@ -472,6 +472,9 @@ func TestEndToEndInstalledHookFiresOnRealCommit(t *testing.T) {
 	}
 
 	waitForEvent(t, activity.OpPush, activity.StatusOK, "", 10*time.Second)
+	// The background push is still notifying the peer; let it finish before
+	// the temp dirs it writes into are removed.
+	waitForEvent(t, activity.OpNotify, activity.StatusOK, "", 10*time.Second)
 	if out := sb.Git(repo, "log", "--oneline", "origin/main"); !strings.Contains(out, "trigger the real hook") {
 		t.Errorf("commit did not reach origin without any manual step:\n%s", out)
 	}
