@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -606,8 +607,8 @@ func hasEvent(events []activity.Event, op activity.Op, status activity.Status, m
 	return false
 }
 
-// A machine that was off runs announce, and a peer that could not reach it
-// while it was away delivers what it owes.
+// What the login service does: a machine that was off runs announce, and a
+// peer that could not reach it while it was away delivers what it owes.
 func TestEndToEndAnnounceAfterBootCollectsWhatThePeersOwe(t *testing.T) {
 	bin := buildBinary(t)
 	sb := testutil.NewSandbox(t)
@@ -641,5 +642,56 @@ func TestEndToEndAnnounceAfterBootCollectsWhatThePeersOwe(t *testing.T) {
 	assertHasEvent(t, c.events(t), activity.OpNotify, activity.StatusOK, "b.local")
 	if entries, _ := os.ReadDir(backlog); len(entries) != 0 {
 		t.Errorf("c still owes b: %v", entries)
+	}
+}
+
+// The login service's process: announces as soon as it starts, then idles
+// until the service manager stops it with SIGTERM, which it obeys at once.
+func TestEndToEndWatchAnnouncesAtStartAndStopsOnSigterm(t *testing.T) {
+	bin := buildBinary(t)
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("group/proj")
+
+	b := newMachine(t, bin, "b.local")
+	c := newMachine(t, bin, "c.local")
+	b.clone(t, sb, "group/proj")
+	c.clone(t, sb, "group/proj")
+	b.saveConfig(t, []string{"group/proj"}, []config.Peer{{Host: "c.local", User: "tester"}})
+	c.saveConfig(t, []string{"group/proj"}, []config.Peer{{Host: "b.local", User: "tester"}})
+	installLoopbackSSH(t, sb, b, c)
+	backlog := filepath.Join(c.Gitsync, "pending", "notify", "b.local")
+	testutil.MkdirAll(t, backlog)
+	testutil.WriteFileIn(t, backlog, "group%2Fproj", "")
+
+	watch := exec.Command(filepath.Join(b.Gitsync, "bin", "git-sync"), "watch")
+	watch.Env = append(os.Environ(), "HOME="+b.Home, "GITSYNC_HOME="+b.Gitsync,
+		"GIT_CONFIG_GLOBAL="+filepath.Join(b.Home, ".gitconfig"), "XDG_CONFIG_HOME="+filepath.Join(b.Home, ".config"))
+	if err := watch.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- watch.Wait() }()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if entries, _ := os.ReadDir(backlog); len(entries) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = watch.Process.Kill()
+			t.Fatal("watch never announced: c still owes b")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	_ = watch.Process.Signal(syscall.SIGTERM)
+	select {
+	case err := <-exited:
+		if err != nil {
+			t.Errorf("watch exited with %v, want 0 so the service is not restarted", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = watch.Process.Kill()
+		t.Fatal("watch ignored SIGTERM")
 	}
 }

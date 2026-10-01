@@ -40,7 +40,7 @@ func TestRunUsageHidesMachineSubcommands(t *testing.T) {
 	// human. Keep them out of the usage text so the CLI stays legible.
 	var out strings.Builder
 	run(nil, &out, &out)
-	for _, hidden := range []string{"receive", "hook", "retry", "announce"} {
+	for _, hidden := range []string{"receive", "hook", "retry", "announce", "watch"} {
 		if strings.Contains(out.String(), hidden) {
 			t.Errorf("usage should not advertise %q:\n%s", hidden, out.String())
 		}
@@ -105,5 +105,45 @@ func TestUnlockOnAnUnlockedRepoIsFine(t *testing.T) {
 
 	if code := run([]string{"unlock", "group/proj"}, io.Discard, io.Discard); code != 0 {
 		t.Fatalf("unlock = %d, want 0", code)
+	}
+}
+
+func TestServiceInstallLocalThenStatusThenUninstall(t *testing.T) {
+	testutil.NewSandbox(t)
+	var out strings.Builder
+	if code := run([]string{"service", "install", "--local"}, &out, &out); code != 0 {
+		t.Fatalf("service install --local = %d: %s", code, out.String())
+	}
+	out.Reset()
+	run([]string{"service", "status"}, &out, &out)
+	if !strings.Contains(out.String(), "login service installed") {
+		t.Errorf("status after install: %q", out.String())
+	}
+	if code := run([]string{"service", "uninstall", "--local"}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("service uninstall --local = %d", code)
+	}
+	out.Reset()
+	run([]string{"service", "status"}, &out, &out)
+	if !strings.Contains(out.String(), "not installed") {
+		t.Errorf("status after uninstall: %q", out.String())
+	}
+}
+
+func TestServiceRejectsAnUnknownAction(t *testing.T) {
+	for _, args := range [][]string{{"service"}, {"service", "restart"}} {
+		if code := run(args, io.Discard, io.Discard); code != 2 {
+			t.Errorf("run(%v) = %d, want 2", args, code)
+		}
+	}
+}
+
+func TestServiceMeshNeedsAnInstall(t *testing.T) {
+	testutil.NewSandbox(t)
+	var out strings.Builder
+	if code := run([]string{"service", "install"}, &out, &out); code != 1 {
+		t.Errorf("service install with no config = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "git-sync install") {
+		t.Errorf("should point at install: %q", out.String())
 	}
 }

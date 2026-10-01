@@ -15,6 +15,8 @@ Usage:
   git-sync uninstall [--purge] [--local]  stop syncing (mesh-wide by default; --local limits it to this machine; --purge also deletes config and history)
   git-sync report [flags]              browse sync activity, grouped by repo
   git-sync unlock [<repo>]             clear a stuck sync lock (default: this repo)
+  git-sync service install|uninstall|status [--local]
+                                       the login service that tells the mesh a machine is back
 
 Run a command with -h for its flags.
 `
@@ -41,6 +43,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdReport(args[1:], stdout, stderr)
 	case "unlock":
 		return cmdUnlock(args[1:], stdout, stderr)
+	case "service":
+		return cmdService(args[1:], stdout, stderr)
 
 	// Machine-invoked, deliberately absent from the usage text.
 	case "hook":
@@ -53,6 +57,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdRetry(args[1:], stderr)
 	case "announce":
 		return cmdAnnounce(args[1:], stderr)
+	case "watch":
+		return cmdWatch(args[1:], stderr)
 
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)

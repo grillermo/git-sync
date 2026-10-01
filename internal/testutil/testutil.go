@@ -42,6 +42,10 @@ func NewSandbox(t *testing.T) *Sandbox {
 	// but be explicit so a stray HOME leak can never write the real one.
 	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(sb.Home, ".gitconfig"))
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	// The login service is written under HOME (macOS) or XDG_CONFIG_HOME
+	// (Linux); a real XDG_CONFIG_HOME would put a test's unit into the
+	// user's own systemd config.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(sb.Home, ".config"))
 	t.Setenv("GIT_AUTHOR_NAME", "git-sync test")
 	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
 	t.Setenv("GIT_COMMITTER_NAME", "git-sync test")
@@ -51,7 +55,32 @@ func NewSandbox(t *testing.T) *Sandbox {
 	tmp := filepath.Join(home, "tmp")
 	MkdirAll(t, tmp)
 	t.Setenv("TMPDIR", tmp)
+	// Installing the login service starts it through the service manager.
+	// A test must never reach the real one: it would load a unit pointing at
+	// a temp binary into the user's own session.
+	sb.stubServiceManagers()
 	return sb
+}
+
+// stubServiceManagers puts fake launchctl and systemctl first on PATH. Each
+// records its arguments in GitsyncHome/service-calls.log and succeeds.
+func (sb *Sandbox) stubServiceManagers() {
+	bin := filepath.Join(sb.Home, "bin")
+	MkdirAll(sb.T, bin)
+	for _, name := range []string{"launchctl", "systemctl"} {
+		writeExecutable(sb.T, filepath.Join(bin, name), "#!/bin/sh\n"+
+			"printf '%s %s\\n' "+name+" \"$*\" >> \"$GITSYNC_HOME/service-calls.log\"\n")
+	}
+	sb.T.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// ServiceCalls returns the recorded launchctl/systemctl invocations.
+func (sb *Sandbox) ServiceCalls() string {
+	b, err := os.ReadFile(filepath.Join(sb.GitsyncHome, "service-calls.log"))
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // Git runs a git command in dir and fails the test if it errors.

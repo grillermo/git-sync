@@ -23,6 +23,7 @@ type PeerOptions struct {
 	SelfHost    string        // this machine's hostname, as the peer sees it
 	SelfUser    string        // the account the peer should ssh back into
 	PeerBaseDir string        // overrides the derived peer base_dir
+	NoService   bool          // skip the login service
 	Out         io.Writer
 }
 
@@ -54,24 +55,9 @@ func ProvisionPeer(o PeerOptions) error {
 	peerHome := probe.Home
 	peerGitsync := peerHome + "/.gitsync"
 
-	// 3. Directories.
-	if err := ssh(target, fmt.Sprintf("mkdir -p %s/bin %s/hooks %s/locks",
-		peerGitsync, peerGitsync, peerGitsync)); err != nil {
+	// 3-4. Directories and the binary.
+	if err := sendBinary(target, peerGitsync, binPath); err != nil {
 		return err
-	}
-
-	// 4. The binary, written then renamed so a commit running on the peer
-	//    never executes a half-copied file.
-	bin, err := os.Open(binPath)
-	if err != nil {
-		return err
-	}
-	defer bin.Close()
-	install := fmt.Sprintf(
-		"cat > %s/bin/git-sync.tmp && chmod +x %s/bin/git-sync.tmp && mv %s/bin/git-sync.tmp %s/bin/git-sync",
-		peerGitsync, peerGitsync, peerGitsync, peerGitsync)
-	if err := sshIn(target, install, bin); err != nil {
-		return fmt.Errorf("copying the binary to %s: %w", target, err)
 	}
 
 	// 5. The peer's config: the same repos, its own base_dir, and the rest of
@@ -114,6 +100,14 @@ func ProvisionPeer(o PeerOptions) error {
 		return err
 	}
 
+	// 8. The login service, written by the peer's own binary so it suits
+	//    the peer's OS.
+	if !o.NoService {
+		if err := ssh(target, peerGitsync+"/bin/git-sync service install --local"); err != nil {
+			return err
+		}
+	}
+
 	fmt.Fprintf(o.Out, "provisioned %s: %d repos, base_dir %s\n",
 		o.Peer.Host, len(o.Cfg.Repos), peerCfg.BaseDir)
 	fmt.Fprintf(o.Out, "  the peer will reach back at %s@%s\n", o.SelfUser, o.SelfHost)
@@ -125,6 +119,28 @@ func ProvisionPeer(o PeerOptions) error {
 		"mesh (%d peer(s)); it does not merge with whatever %s already had configured.\n",
 		o.Peer.Host, len(peerCfg.Peers), o.Peer.Host)
 
+	return nil
+}
+
+// sendBinary creates the peer's ~/.gitsync layout and copies binPath into
+// it, written then renamed so a commit running on the peer never executes a
+// half-copied file.
+func sendBinary(target, peerGitsync, binPath string) error {
+	if err := ssh(target, fmt.Sprintf("mkdir -p %s/bin %s/hooks %s/locks",
+		peerGitsync, peerGitsync, peerGitsync)); err != nil {
+		return err
+	}
+	bin, err := os.Open(binPath)
+	if err != nil {
+		return err
+	}
+	defer bin.Close()
+	install := fmt.Sprintf(
+		"cat > %s/bin/git-sync.tmp && chmod +x %s/bin/git-sync.tmp && mv %s/bin/git-sync.tmp %s/bin/git-sync",
+		peerGitsync, peerGitsync, peerGitsync, peerGitsync)
+	if err := sshIn(target, install, bin); err != nil {
+		return fmt.Errorf("copying the binary to %s: %w", target, err)
+	}
 	return nil
 }
 

@@ -27,6 +27,10 @@ type Options struct {
 	// PeerBaseDir overrides the derived base_dir for a peer that did not
 	// specify its own (config.Peer.BaseDir wins when a peer sets it).
 	PeerBaseDir string
+
+	// NoService skips the login service that announces each machine to the
+	// mesh when it starts.
+	NoService bool
 }
 
 // HookNames are the git hooks git-sync installs. post-commit broadcasts;
@@ -73,10 +77,7 @@ func Install(o Options) error {
 
 	// Per-platform builds sit beside the binary this was run from (bin/ in the
 	// repo), not beside the installed copy.
-	var builds string
-	if resolved, err := filepath.EvalSymlinks(self); err == nil {
-		builds = filepath.Dir(resolved)
-	}
+	builds := BuildsDir(self)
 
 	for _, d := range []string{config.Home(), config.HooksDir(), config.LocksDir(), filepath.Dir(config.BinPath())} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -120,6 +121,12 @@ func Install(o Options) error {
 	}
 	fmt.Fprintf(o.Out, "set global core.hooksPath to %s\n", config.HooksDir())
 
+	if !o.NoService {
+		if err := InstallService(o.Out); err != nil {
+			return fmt.Errorf("installing the login service: %w", err)
+		}
+	}
+
 	if o.NoPeer {
 		fmt.Fprintln(o.Out, "skipping peer provisioning (--no-peer)")
 		fmt.Fprintln(o.Out, "done.")
@@ -150,7 +157,7 @@ func Install(o Options) error {
 		err := ProvisionPeer(PeerOptions{
 			Cfg: cfg, Peer: p,
 			Self: config.BinPath(), Builds: builds, SelfHost: selfHost, SelfUser: selfUser,
-			PeerBaseDir: override, Out: o.Out,
+			PeerBaseDir: override, NoService: o.NoService, Out: o.Out,
 		})
 		switch {
 		case err == nil:
@@ -194,6 +201,12 @@ func Uninstall(purge bool, out io.Writer) error {
 			return fmt.Errorf("unsetting core.hooksPath: %w", err)
 		}
 		fmt.Fprintln(out, "unset global core.hooksPath")
+	}
+
+	// Before the binary goes: a login service left behind would exec a
+	// binary that no longer exists at every login.
+	if err := UninstallService(out); err != nil {
+		return err
 	}
 
 	for _, p := range []string{

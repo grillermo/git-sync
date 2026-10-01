@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,6 +59,8 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	all := fs.Bool("all", false, "sync every repo found; skip the picker")
 	only := fs.String("repos", "", "comma-separated repos to sync; skips the picker")
 	noPeer := fs.Bool("no-peer", false, "do not provision any peer machine")
+	noService := fs.Bool("no-service", false,
+		"do not install the login service that announces each machine to the mesh when it starts")
 	discover := fs.Bool("discover", false,
 		"look for more machines on this network even when peers are already configured")
 	noInitialSync := fs.Bool("no-initial-sync", false,
@@ -217,7 +221,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	if err := setup.Install(setup.Options{
 		BaseDir: fs.Arg(0), Peers: peers, Repos: repos,
 		NoPeer: *noPeer, SelfHost: *selfHost, SelfUser: *selfUser,
-		PeerBaseDir: *peerBaseDir, Out: stdout,
+		PeerBaseDir: *peerBaseDir, NoService: *noService, Out: stdout,
 	}); err != nil {
 		fmt.Fprintln(stderr, "install failed:", err)
 		return 1
@@ -855,4 +859,92 @@ func cmdAnnounce(args []string, stderr io.Writer) int {
 		return 2
 	}
 	return syncer.Announce()
+}
+
+// cmdWatch is what the login service runs. launchd and systemd stop it with
+// SIGTERM; that ends it at the next safe point rather than mid-receive.
+func cmdWatch(args []string, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: git-sync watch")
+		return 2
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	stop := make(chan struct{})
+	go func() {
+		<-sigs
+		close(stop)
+	}()
+	return syncer.Watch(syncer.WatchOptions{
+		BinPath: config.BinPath(),
+		StillWanted: func() bool {
+			_, ok := setup.ServiceInstalled()
+			return ok
+		},
+		Stop: stop,
+	})
+}
+
+func cmdService(args []string, stdout, stderr io.Writer) int {
+	const usage = "usage: git-sync service install|uninstall|status [--local]"
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	action := args[0]
+	fs := flag.NewFlagSet("service "+action, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	local := fs.Bool("local", false, "only this machine, not the rest of the mesh")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+
+	switch action {
+	case "status":
+		if path, ok := setup.ServiceInstalled(); ok {
+			fmt.Fprintf(stdout, "login service installed: %s\n", path)
+		} else {
+			fmt.Fprintln(stdout, "login service not installed (git-sync service install)")
+		}
+		return 0
+	case "install", "uninstall":
+	default:
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	remove := action == "uninstall"
+
+	if *local {
+		var err error
+		if remove {
+			err = setup.UninstallService(stdout)
+		} else {
+			err = setup.InstallService(stdout)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "service %s failed: %v\n", action, err)
+			return 1
+		}
+		return 0
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(stderr, "git-sync is not installed here; run git-sync install first")
+		return 1
+	}
+	self, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(stderr, "locating this binary:", err)
+		return 1
+	}
+	if err := setup.ServiceMesh(cfg, self, remove, stdout); err != nil {
+		fmt.Fprintf(stderr, "service %s failed: %v\n", action, err)
+		return 1
+	}
+	return 0
 }

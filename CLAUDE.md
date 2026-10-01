@@ -100,13 +100,14 @@ special-casing, for any number of machines in the mesh.
 
 ## Architecture
 
-Nine subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
+Eleven subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
 actual command bodies live in `cmd/git-sync/stubs.go` — despite the
 filename, that file is not stub code, it's the real implementation of every
-`cmdX` function). Four are for humans (`install`, `uninstall`, `report`,
-`unlock` — clears a stuck receiver lock by hand); five are invoked by
-machines and deliberately hidden from `-h` output (`hook`, `push`,
-`receive`, `retry`, `announce`). Key-only ssh auth means nothing else needs to shell out to
+`cmdX` function). Five are for humans (`install`, `uninstall`, `report`,
+`unlock` — clears a stuck receiver lock by hand, `service` — installs or
+removes the login service mesh-wide, or with `--local` just here); six are
+invoked by machines and deliberately hidden from `-h` output (`hook`, `push`,
+`receive`, `retry`, `announce`, `watch`). Key-only ssh auth means nothing else needs to shell out to
 git-sync itself, so there is no `askpass`/`savepass` anymore.
 
 Package layering, leaves to composition:
@@ -169,7 +170,20 @@ Package layering, leaves to composition:
     longer selected are dropped. `sshx` adds `ServerAliveInterval`/`CountMax`
     so a peer that vanishes mid-receive turns into exit 255 after ~1 minute
     instead of hanging the background push.
-  - `announce.go`: `git-sync announce`, for a machine coming back online.
+  - `watch.go`: the long-running process the login service runs. Announces
+    once at start (login) and again on every wake from sleep. No user-level,
+    cgo-free sleep notification exists on either OS (IOKit on macOS, root's
+    system-sleep hooks on Linux), so a wake is read off the clocks: it
+    sleeps `Interval` on the monotonic clock, which stops during system
+    sleep, and a *wall-clock* gap beyond `Interval+Slack` means the machine
+    slept. Exits `ExitRestart` (75) when the installed binary is replaced, so
+    the service's restart-on-failure brings it back on the new version, and
+    0 once the binary or the unit is gone (uninstalled — stays stopped).
+    SIGTERM is honoured only at safe points: `announce` checks its stop
+    channel between repos and rounds, never inside a receive. Every clock,
+    sleep and announce is injectable via `WatchOptions` for tests.
+  - `announce.go`: what `watch` runs at login and on wake (also callable
+    directly as `git-sync announce`).
     Retries with backoff for up to 5 minutes (`GITSYNC_ANNOUNCE_TIMEOUT`, a
     test escape hatch) because a login service usually starts before the
     network: catches every selected repo up from the remote by the same
@@ -239,6 +253,24 @@ Package layering, leaves to composition:
   path anymore), `initialsync.go` (the last install stage: measures every
   machine in the mesh against the shared remote, then pushes whichever side
   is purely ahead and fast-forwards whichever is purely behind).
+
+  `service.go` writes the login service that runs `watch`: a
+  LaunchAgent plist in `~/Library/LaunchAgents` on macOS, a systemd user unit
+  (enabled by writing the `default.target.wants` symlink by hand) under
+  `$XDG_CONFIG_HOME/systemd/user` on Linux. The files alone
+  make it start at every login (launchd restarts it only on failure —
+  `KeepAlive`/`SuccessfulExit=false`; systemd `Restart=on-failure`). Starting
+  it right now goes through `launchctl bootout`+`bootstrap` / `systemctl
+  --user daemon-reload`+`restart`, best effort only: over ssh there may be no
+  GUI session or user bus, and a failure just means it starts at the next
+  login. `NewSandbox` stubs `launchctl`/`systemctl` on PATH (calls logged,
+  see `ServiceCalls`) and sandboxes `XDG_CONFIG_HOME`, so no test can load a
+  unit into the real session. `install` sets it up
+  on every machine (`--no-service` skips; a peer's unit is written by the
+  peer's own binary via `service install --local`), `uninstall` removes it.
+  `ServiceMesh` is the standalone `git-sync service install` for an existing
+  mesh: it also upgrades each machine's binary (via `sendBinary`, shared
+  with `ProvisionPeer`), since older ones have no `announce`.
 
   `initialsync.go` exists because `receive` only ever fast-forwards. One
   unpushed commit sitting on any machine at install time makes every later
