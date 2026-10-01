@@ -22,7 +22,11 @@ import (
 // Returns a process exit code; ExitRepoNotHere when this machine has no copy,
 // ExitFetchFailed when it could not fetch.
 func Receive(rel, from string) int {
-	from = sanitizeHost(from)
+	return receive(rel, sanitizeHost(from))
+}
+
+// receive is Receive with from already trusted.
+func receive(rel, from string) int {
 	cfg, err := config.Load()
 	if err != nil {
 		return 1

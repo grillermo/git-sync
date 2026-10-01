@@ -848,3 +848,11 @@ func cmdRetry(args []string, stderr io.Writer) int {
 	}
 	return syncer.Retry()
 }
+
+func cmdAnnounce(args []string, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: git-sync announce")
+		return 2
+	}
+	return syncer.Announce()
+}

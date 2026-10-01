@@ -100,13 +100,13 @@ special-casing, for any number of machines in the mesh.
 
 ## Architecture
 
-Eight subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
+Nine subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
 actual command bodies live in `cmd/git-sync/stubs.go` — despite the
 filename, that file is not stub code, it's the real implementation of every
 `cmdX` function). Four are for humans (`install`, `uninstall`, `report`,
-`unlock` — clears a stuck receiver lock by hand); four are invoked by
+`unlock` — clears a stuck receiver lock by hand); five are invoked by
 machines and deliberately hidden from `-h` output (`hook`, `push`,
-`receive`, `retry`). Key-only ssh auth means nothing else needs to shell out to
+`receive`, `retry`, `announce`). Key-only ssh auth means nothing else needs to shell out to
 git-sync itself, so there is no `askpass`/`savepass` anymore.
 
 Package layering, leaves to composition:
@@ -169,6 +169,15 @@ Package layering, leaves to composition:
     longer selected are dropped. `sshx` adds `ServerAliveInterval`/`CountMax`
     so a peer that vanishes mid-receive turns into exit 255 after ~1 minute
     instead of hanging the background push.
+  - `announce.go`: `git-sync announce`, for a machine coming back online.
+    Retries with backoff for up to 5 minutes (`GITSYNC_ANNOUNCE_TIMEOUT`, a
+    test escape hatch) because a login service usually starts before the
+    network: catches every selected repo up from the remote by the same
+    path as `receive` (so a commit whose author machine is itself off now is
+    still picked up), sshes every peer to run its `retry` (so it sends what
+    it owes this machine), and flushes this machine's own backlog. A peer
+    still unreachable at the deadline is only noted in `debug.log`: it is
+    presumably off and will announce itself.
   - `receive.go`: `Receive(rel, from)` acquires the lock (recording `from`,
     the notifying machine, in the `Owner`), fetches, stashes if dirty,
     fast-forwards, unstashes — unconditionally, whether or not the

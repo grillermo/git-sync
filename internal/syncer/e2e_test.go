@@ -605,3 +605,41 @@ func hasEvent(events []activity.Event, op activity.Op, status activity.Status, m
 	}
 	return false
 }
+
+// A machine that was off runs announce, and a peer that could not reach it
+// while it was away delivers what it owes.
+func TestEndToEndAnnounceAfterBootCollectsWhatThePeersOwe(t *testing.T) {
+	bin := buildBinary(t)
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+
+	b := newMachine(t, bin, "b.local")
+	c := newMachine(t, bin, "c.local")
+	bRepo := b.clone(t, sb, "group/proj")
+	c.clone(t, sb, "group/proj")
+	b.saveConfig(t, []string{"group/proj"}, []config.Peer{{Host: "c.local", User: "tester"}})
+	c.saveConfig(t, []string{"group/proj"}, []config.Peer{{Host: "b.local", User: "tester"}})
+	installLoopbackSSH(t, sb, b, c)
+
+	// A commit reached the remote while b was off, and c could not tell it.
+	testutil.Commit(t, sb, repo, "while b was off")
+	sb.Git(repo, "push", "-q", "origin", "main")
+	backlog := filepath.Join(c.Gitsync, "pending", "notify", "b.local")
+	testutil.MkdirAll(t, backlog)
+	testutil.WriteFileIn(t, backlog, "group%2Fproj", "")
+
+	announce := exec.Command(filepath.Join(b.Gitsync, "bin", "git-sync"), "announce")
+	announce.Env = append(os.Environ(), "HOME="+b.Home, "GITSYNC_HOME="+b.Gitsync,
+		"GIT_CONFIG_GLOBAL="+filepath.Join(b.Home, ".gitconfig"), "GITSYNC_ANNOUNCE_TIMEOUT=5s")
+	if out, err := announce.CombinedOutput(); err != nil {
+		t.Fatalf("announce: %v\n%s", err, out)
+	}
+
+	if out := sb.Git(bRepo, "log", "--oneline", "-1"); !strings.Contains(out, "while b was off") {
+		t.Errorf("b did not catch up:\n%s", out)
+	}
+	assertHasEvent(t, c.events(t), activity.OpNotify, activity.StatusOK, "b.local")
+	if entries, _ := os.ReadDir(backlog); len(entries) != 0 {
+		t.Errorf("c still owes b: %v", entries)
+	}
+}

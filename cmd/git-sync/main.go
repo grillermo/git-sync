@@ -51,6 +51,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdReceive(args[1:], stderr)
 	case "retry":
 		return cmdRetry(args[1:], stderr)
+	case "announce":
+		return cmdAnnounce(args[1:], stderr)
 
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
