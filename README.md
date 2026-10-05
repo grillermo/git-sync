@@ -130,6 +130,11 @@ warning naming this when it re-provisions an already-configured peer.
 ## The commands
 
 - `git-sync install <base_dir>` - see above.
+- `git-sync install` (no `base_dir`, run inside a repo) - add just that repo,
+  no scan and no repo picker; the machine picker always opens so you choose
+  where it syncs. Keeps an existing install's `base_dir` (the repo must be
+  under it) and its other repos; with nothing installed yet it asks for a
+  `base_dir`, defaulting to the repo's parent.
 - `git-sync report [flags]` - browse sync activity, grouped by repo.
   - `--since 24h` - only show activity newer than this
   - `--repo <substr>` - only show repos whose path contains this

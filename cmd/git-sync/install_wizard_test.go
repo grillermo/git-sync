@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -250,5 +251,70 @@ func TestInstallKeepsThePendingSelectionWhileAMachineIsUnreachable(t *testing.T)
 	}
 	if !strings.Contains(errOut.String(), "ssh t@b.local true") {
 		t.Errorf("the unreachable machine's fix must be spelled out:\n%s", errOut.String())
+	}
+}
+
+func TestInstallWithNoBaseDirAddsJustTheCurrentRepo(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("group/old")
+	here := sb.MakeRepo("group/proj")
+	sb.MakeRepo("group/other")
+	testutil.SaveConfigWithRepos(t, sb, "b.local", "t", []string{"group/old"})
+	sb.StubSSHScripted(map[string]string{"*uname*": "Darwin arm64", "*HOME*": "/home/t"}, 0)
+	testutil.Chdir(t, here)
+
+	var errOut bytes.Buffer
+	if code := run([]string{"install", "--no-initial-sync"}, io.Discard, &errOut); code != 0 {
+		t.Fatalf("install = %d, want 0; stderr: %s", code, errOut.String())
+	}
+	cfg, _ := config.Load()
+	if !testutil.SamePath(cfg.BaseDir, sb.BaseDir) {
+		t.Errorf("base_dir = %q, want the existing %q", cfg.BaseDir, sb.BaseDir)
+	}
+	if want := []string{"group/old", "group/proj"}; !reflect.DeepEqual(cfg.Repos, want) {
+		t.Errorf("repos = %v, want %v (the current repo added, nothing scanned)", cfg.Repos, want)
+	}
+}
+
+func TestInstallWithNoBaseDirDefaultsToTheRepoParent(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	here := sb.MakeRepo("group/proj")
+	testutil.Chdir(t, here)
+
+	var errOut bytes.Buffer
+	if code := run([]string{"install", "--no-peer"}, io.Discard, &errOut); code != 0 {
+		t.Fatalf("install = %d, want 0; stderr: %s", code, errOut.String())
+	}
+	cfg, _ := config.Load()
+	if want := filepath.Join(sb.BaseDir, "group"); !testutil.SamePath(cfg.BaseDir, want) {
+		t.Errorf("base_dir = %q, want the repo's parent %q", cfg.BaseDir, want)
+	}
+	if want := []string{"proj"}; !reflect.DeepEqual(cfg.Repos, want) {
+		t.Errorf("repos = %v, want %v", cfg.Repos, want)
+	}
+}
+
+func TestInstallWithNoBaseDirRefusesARepoOutsideTheInstalledBase(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	testutil.SaveConfigWithRepos(t, sb, "b.local", "t", nil)
+	outside := t.TempDir()
+	sb.Git(outside, "init", "-q")
+	testutil.Chdir(t, outside)
+
+	var errOut bytes.Buffer
+	if code := run([]string{"install", "--no-peer"}, io.Discard, &errOut); code != 2 {
+		t.Fatalf("install = %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "not under base_dir") {
+		t.Errorf("stderr = %q, want it to say the repo is not under base_dir", errOut.String())
+	}
+}
+
+func TestInstallWithNoBaseDirOutsideARepoIsAUsageError(t *testing.T) {
+	testutil.NewSandbox(t)
+	testutil.Chdir(t, t.TempDir())
+
+	if code := run([]string{"install", "--no-peer"}, io.Discard, io.Discard); code != 2 {
+		t.Fatalf("install = %d, want 2", code)
 	}
 }

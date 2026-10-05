@@ -74,9 +74,24 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: git-sync install [--peer user@host[:base_dir] ...] <base_dir>")
+	// With no base_dir, install syncs just the repo it is run in: no scan, no
+	// repo picker, but always the machine picker, since choosing where this
+	// repo goes is the point.
+	here := fs.NArg() == 0
+	if fs.NArg() > 1 || (here && (*all || *only != "")) {
+		fmt.Fprintln(stderr, "usage: git-sync install [--peer user@host[:base_dir] ...] [<base_dir>]")
 		return 2
+	}
+	var baseArg, hereRel string
+	if here {
+		var err error
+		if baseArg, hereRel, err = installHere(stdout); err != nil {
+			fmt.Fprintln(stderr, "install:", err)
+			return 2
+		}
+		*discover = true
+	} else {
+		baseArg = fs.Arg(0)
 	}
 
 	// Step 1: --peer-host/--peer-user is the single-peer alias, folded into
@@ -136,7 +151,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		peers = append(peers, p)
 	}
 
-	base, err := filepath.Abs(fs.Arg(0))
+	base, err := filepath.Abs(baseArg)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -169,15 +184,26 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		paired = len(reachable) == len(peers) && len(fixes) == 0
 	}
 
-	fmt.Fprintf(stdout, "choosing repos under %s\n", base)
-	repos, err := chooseRepos(base, *all, *only, stdout, stderr)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	if repos == nil {
-		fmt.Fprintln(stdout, "cancelled; nothing was installed")
-		return 0
+	// repos is the whole allowlist install writes; added is the part of it
+	// this run is about, which is all the peer check, the clones and the
+	// levelling look at.
+	var repos, added []string
+	if here {
+		added = []string{hereRel}
+		repos = withRepo(hereRel)
+		fmt.Fprintf(stdout, "syncing %s (base_dir %s)\n", hereRel, base)
+	} else {
+		fmt.Fprintf(stdout, "choosing repos under %s\n", base)
+		repos, err = chooseRepos(base, *all, *only, stdout, stderr)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if repos == nil {
+			fmt.Fprintln(stdout, "cancelled; nothing was installed")
+			return 0
+		}
+		added = repos
 	}
 
 	// Step 5: ask each reachable peer which of the chosen repos it actually
@@ -187,7 +213,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	var clones []peerClones
 	if !*noPeer {
 		remotes := cfgRemotes()
-		wants := repoWants(config.Config{BaseDir: base, RemoteNames: remotes}, repos)
+		wants := repoWants(config.Config{BaseDir: base, RemoteNames: remotes}, added)
 		var ok bool
 		clones, ok = checkPeer(reachable, config.Config{BaseDir: base, RemoteNames: remotes}, wants,
 			!*noClone, stdout, stderr)
@@ -219,7 +245,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintln(stdout, "installing")
 	if err := setup.Install(setup.Options{
-		BaseDir: fs.Arg(0), Peers: peers, Repos: repos,
+		BaseDir: baseArg, Peers: peers, Repos: repos,
 		NoPeer: *noPeer, SelfHost: *selfHost, SelfUser: *selfUser,
 		PeerBaseDir: *peerBaseDir, NoService: *noService, Out: stdout,
 	}); err != nil {
@@ -229,9 +255,12 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 
 	// The saved repo selection has done its job once every machine is
 	// reachable and every pair connects; until then the next run reuses it.
-	if paired || *noPeer {
+	// A single-repo install never used the picker, so has nothing to keep.
+	switch {
+	case here:
+	case paired || *noPeer:
 		clearPending()
-	} else if loadPending(base) != nil {
+	case loadPending(base) != nil:
 		fmt.Fprintf(stdout, "not every machine is paired yet; your repo selection is kept in %s "+
 			"for the next run\n", pendingPath())
 	}
@@ -248,9 +277,65 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	// so a single unpushed commit on any machine makes every later sync warn
 	// instead of applying, and nothing retries it.
 	if !*noPeer && !*noInitialSync {
-		levelRepos(config.Config{BaseDir: base, RemoteNames: cfgRemotes()}, peers, repos, stdout, stderr)
+		levelRepos(config.Config{BaseDir: base, RemoteNames: cfgRemotes()}, peers, added, stdout, stderr)
 	}
 	return 0
+}
+
+// installHere resolves `git-sync install` run with no base_dir to the repo the
+// current directory is in. An existing install keeps its base_dir, and the
+// repo has to be under it - moving base_dir would change the identity of
+// every repo already syncing. With nothing installed yet the user is asked
+// for one, defaulting to the repo's parent.
+func installHere(stdout io.Writer) (base, rel string, err error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", "", err
+	}
+	root, err := gitcmd.Toplevel(wd)
+	if err != nil {
+		return "", "", errors.New("not inside a git repo; run it in one, or name a base_dir to pick repos under")
+	}
+
+	if cfg, cfgErr := config.Load(); cfgErr == nil && cfg.BaseDir != "" {
+		base = cfg.BaseDir
+	} else {
+		def := filepath.Dir(root)
+		base = prompt(stdout, fmt.Sprintf("base_dir, the folder every synced repo lives under [%s]: ", def))
+		if base == "" {
+			base = def
+		} else if rest, ok := strings.CutPrefix(base, "~/"); ok {
+			base = filepath.Join(os.Getenv("HOME"), rest)
+		}
+		if base, err = filepath.Abs(base); err != nil {
+			return "", "", err
+		}
+	}
+
+	// git resolves symlinks in --show-toplevel (e.g. macOS's /var ->
+	// /private/var) but base_dir is not, so compare them resolved, as unlock
+	// does.
+	rc := config.Config{BaseDir: base}
+	if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		rc.BaseDir = resolved
+	}
+	if rel, err = rc.RepoRel(root); err != nil {
+		return "", "", err
+	}
+	return base, rel, nil
+}
+
+// withRepo is the configured allowlist with rel added, so syncing one more
+// repo never drops the ones already syncing.
+func withRepo(rel string) []string {
+	var repos []string
+	if cfg, err := config.Load(); err == nil {
+		repos = cfg.Repos
+	}
+	if (config.Config{Repos: repos}).IsSelected(rel) {
+		return repos
+	}
+	return append(repos, rel)
 }
 
 // discoverPeers scans the local network behind the machine picker and turns
