@@ -1301,23 +1301,23 @@ git commit -m "test(e2e): a synced commit runs ./activate on the peer only"
 **Files:**
 - Modify: `CLAUDE.md`, `README.md`
 
-- [ ] **Step 1: Update `CLAUDE.md`**
+- [x] **Step 1: Update `CLAUDE.md`**
   - Subcommand count: twelve. `activate` is human-facing (`activate [<repo>]`), and `activate --drain` is machine-invoked.
   - Under `internal/syncer`, add an `activate.go` bullet: queue under `~/.gitsync/activate/queue/` (one file per repo, `link(2)` create-if-absent, keeps the oldest rev); `receive` only enqueues after a fast-forward that moved HEAD; the command layer starts the drainer after receive, announce and watch (`WatchOptions.AfterAnnounce`); one machine-wide lock (`locks/.activate.lock`) keeps runs serial; each run holds the repo's receive lock (`Owner.From == "./activate"`); env `GITSYNC_OLD_REV`/`GITSYNC_NEW_REV` (empty tree on a manual run), `GITSYNC_INTERNAL` stripped; logs in `~/.gitsync/activate/<rel>.log`; `GITSYNC_ACTIVATE_TIMEOUT` (default 15m) is a test escape hatch.
   - Runtime layout: add `activate/`.
   - Key invariants: add "Only receiving machines run `./activate`, one at a time; a failed one is an event, never retried automatically."
-- [ ] **Step 2: Update `README.md`.** Add a short "Making synced code live: `./activate`" section with the contract from the spec (executable, idempotent, no tty, sets its own PATH, env vars, exit status) and the two-line service example.
-- [ ] **Step 3: Full check**
+- [x] **Step 2: Update `README.md`.** Add a short "Making synced code live: `./activate`" section with the contract from the spec (executable, idempotent, no tty, sets its own PATH, env vars, exit status) and the two-line service example.
+- [x] **Step 3: Full check**
 
 Run: `make check && go test -race ./...`
 Expected: all PASS.
 
-- [ ] **Step 4: Rebuild**
+- [x] **Step 4: Rebuild**
 
 Run: `make build`
 Expected: `built .../bin/git-sync-<os>-<arch>` for all four targets.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add CLAUDE.md README.md

@@ -147,9 +147,48 @@ warning naming this when it re-provisions an already-configured peer.
   repo in the current directory). Needed only if a receive died mid-sync
   (killed process, machine went to sleep) and you don't want to wait out the
   stale-lock timeout.
+- `git-sync activate [<repo>]` - run a repo's `./activate` now (default: the
+  repo in the current directory), in the foreground. See below. Ctrl-C stops
+  the script and releases the repo.
 - `git-sync uninstall [--purge] [--local]` - remove git-sync from every
   machine in the mesh (`--local` limits it to this machine only; `--purge`
   also deletes config and activity history on whichever machines it touches).
+
+## Making synced code live: `./activate`
+
+When a sync moves a repo forward on a machine and that repo has an
+executable `./activate` at its root, git-sync runs it there afterwards - to
+rebuild a binary, restart a service, whatever "deploy" means for the repo.
+Only machines that *receive* the change run it, never the one that committed.
+
+The script must:
+
+- be executable and live at the repo root;
+- be idempotent, since it can run when nothing relevant changed;
+- not expect a terminal (stdin is not a tty) and set its own `PATH`, because
+  it runs from a background process, not your shell;
+- read `GITSYNC_OLD_REV` and `GITSYNC_NEW_REV` to see what changed
+  (`git diff "$GITSYNC_OLD_REV" "$GITSYNC_NEW_REV" -- some/path`). Several
+  quick commits are merged into one run, with the oldest `OLD_REV`;
+- exit 0 on success. Anything else is recorded as an error in
+  `git-sync report`.
+
+Runs are queued and go one repo at a time per machine. While a repo's
+`./activate` runs, commits and pushes in it are refused, with a message saying
+so, just as during a receive. Output goes to `~/.gitsync/activate/<repo>.log`.
+A run is stopped after 15 minutes. A failed run is not retried; the next
+sync that changes the repo queues it again.
+
+`git-sync activate [<repo>]` runs it by hand. A manual run passes git's
+empty-tree hash as `GITSYNC_OLD_REV`, so a diff against it sees every file as
+changed and the script does the full job.
+
+For a service that only needs restarting, two lines are enough:
+
+```sh
+#!/bin/sh
+exec ./serve
+```
 
 ## Repos that exist on only one machine
 

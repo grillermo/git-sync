@@ -100,14 +100,16 @@ special-casing, for any number of machines in the mesh.
 
 ## Architecture
 
-Eleven subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
+Twelve subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
 actual command bodies live in `cmd/git-sync/stubs.go` — despite the
 filename, that file is not stub code, it's the real implementation of every
-`cmdX` function). Five are for humans (`install`, `uninstall`, `report`,
+`cmdX` function). Six are for humans (`install`, `uninstall`, `report`,
 `unlock` — clears a stuck receiver lock by hand, `service` — installs or
-removes the login service mesh-wide, or with `--local` just here); six are
+removes the login service mesh-wide, or with `--local` just here, `activate
+[<repo>]` — runs a repo's `./activate` now); six are
 invoked by machines and deliberately hidden from `-h` output (`hook`, `push`,
-`receive`, `retry`, `announce`, `watch`). Key-only ssh auth means nothing else needs to shell out to
+`receive`, `retry`, `announce`, `watch`; `activate --drain` is the machine
+form of the twelfth). Key-only ssh auth means nothing else needs to shell out to
 git-sync itself, so there is no `askpass`/`savepass` anymore.
 
 Package layering, leaves to composition:
@@ -200,6 +202,38 @@ Package layering, leaves to composition:
     hook, and — because the lock is held for the whole operation — any local
     commit attempted mid-receive is refused by `pre-commit`/`pre-push` and
     so can never itself get broadcast out.
+  - `activate.go`: runs a repo's executable `./activate` after a sync lands
+    new code on this machine (build, restart a service). `receive` only
+    *enqueues*, after a fast-forward that moved HEAD in a repo that has one,
+    into `~/.gitsync/activate/queue/` — one file per repo, holding the
+    pre-sync rev, created with `link(2)` so it is create-if-absent: a repo is
+    queued at most once and keeps the *oldest* rev, so three quick commits
+    mean one run. The `syncer` package never starts a process itself; the
+    command layer (`kickActivate` in `stubs.go`) spawns a detached `git-sync
+    activate --drain` after `receive` and `announce`, and `watch` does the
+    same via `WatchOptions.AfterAnnounce` (which also picks up anything a
+    crash left queued). The drainer takes one machine-wide lock
+    (`locks/.activate`), so runs are serial per machine, and if the lock is
+    held it just exits — the holder will see the new entry. Each run pops the
+    entry *before* running (a sync landing mid-run re-queues the repo) and
+    holds the repo's own receive lock with `Owner.From == "./activate"`, so
+    no fast-forward rewrites the tree under a build and `pre-commit`/
+    `pre-push` refuse commits, naming the running `./activate`. A busy repo
+    postpones its entry (re-queued, round stops; that receive's own drainer
+    resumes). The script runs in the repo root in its own process group with
+    `GITSYNC_OLD_REV`/`GITSYNC_NEW_REV` set and `GITSYNC_INTERNAL` stripped
+    (so a commit it tries is refused like any other); output goes to
+    `~/.gitsync/activate/<rel>.log` (rotated at 256 KiB). A timeout kills the
+    whole group; `GITSYNC_ACTIVATE_TIMEOUT` (default 15m) is a test escape
+    hatch. Success, failure and timeout are `activate` events in the
+    activity log. `git-sync activate [<repo>]` is the manual form: it waits
+    for the drain lock, runs in the foreground with output teed to the
+    terminal, drops that repo's queue entry, and passes git's empty-tree hash
+    as `GITSYNC_OLD_REV` so `git diff OLD NEW` sees every file as changed.
+    Ctrl-C/SIGTERM kills the script's group and releases both locks (a second
+    Ctrl-C kills git-sync outright). Entries for repos no longer selected or
+    no longer having a `./activate` are dropped with a `skip` event.
+    `initialsync` does not enqueue.
 - **`internal/scan`** / **`internal/picker`** — repo discovery under
   `base_dir`, and a thin adapter (`Rows`/`Config`/`Choose`) that hands the
   scan to `github.com/grillermo/chicle` (pinned at a published tag, not a
@@ -294,7 +328,7 @@ Runtime layout under `~/.gitsync/` (or `$GITSYNC_HOME`): `bin/git-sync` (the
 copy the hooks and ssh invoke — re-copying on install can't race a commit
 mid-execution), `hooks/{post-commit,pre-commit,pre-push}` (shell shims, not
 the binary itself, for the same non-racing reason — each just execs `git-sync
-hook <name>`), `config.toml`, `activity.jsonl`, `debug.log`, `locks/`, `pending/`. No
+hook <name>`), `config.toml`, `activity.jsonl`, `debug.log`, `locks/`, `pending/`, `activate/` (`queue/` plus per-repo `*.log`). No
 `askpass`: ssh is key-only now, so there is nothing for one to feed.
 
 ## Key invariants worth preserving
@@ -322,6 +356,10 @@ hook <name>`), `config.toml`, `activity.jsonl`, `debug.log`, `locks/`, `pending/
   goes stale after `StaleAfter` and stops blocking on its own, and
   `git-sync unlock` clears one by hand — a wedged lock must never be able to
   permanently stop a repo from taking commits.
+- Only receiving machines run `./activate`, never the committing one, and one
+  at a time per machine. A failed or timed-out run is an event in the
+  activity log, never retried automatically (the next sync that moves the
+  repo queues it again).
 
 ## Dependency pins (Go 1.26)
 
