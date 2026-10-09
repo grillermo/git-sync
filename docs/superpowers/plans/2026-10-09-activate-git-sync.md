@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-09-activate-design.md`
 
+**Starting from a fresh session:** read the spec first, then this plan. This is plan 1 of 2. Plan 2, `docs/superpowers/plans/2026-10-09-activate-repos.md`, writes the per-repo scripts and depends on this one being finished and rolled out. Ticked checkboxes record progress. As of commit `4dbfd85` nothing is implemented. Tick each step as you finish it and commit the plan along with the code, so the next session knows where to resume. Decisions already made with the user, not to re-open:
+- Only receiving machines run `./activate`, never the committing machine.
+- Runs are serial per machine, through the queue.
+- Repos used by other people (`comunidad-antesis`, `readitsoon`, `server`) never get an `activate`.
+- The five personal services' `activate` only delegates to `./serve`.
+- Open shells only get a notice; nothing re-sources automatically.
+- `readitsoon-companion` is out of scope.
+
 **Deliberate differences from the spec (YAGNI):**
 - No `GITSYNC_FROM`: a coalesced entry can cover commits from several machines, so there is no single honest value.
 - `initialsync` does not enqueue. Install is a one-off. Run `git-sync activate <repo>` by hand afterwards if needed.
