@@ -280,8 +280,12 @@ func ActivateNowContext(ctx context.Context, rel string, out io.Writer) int {
 		return 1
 	}
 
-	g, err := lock.Acquire(drainLock, activateTimeout()+time.Minute)
+	g, err := acquireCtx(ctx, drainLock, "", activateTimeout()+time.Minute)
 	if err != nil {
+		if ctx.Err() != nil {
+			fmt.Fprintln(out, "activate: interrupted")
+			return exitInterrupted
+		}
 		fmt.Fprintln(out, "activate: another ./activate is still running:", err)
 		return 1
 	}
@@ -289,8 +293,12 @@ func ActivateNowContext(ctx context.Context, rel string, out io.Writer) int {
 	stopG := heartbeat(g)
 	defer stopG()
 
-	l, err := lock.AcquireFrom(rel, ActivateOwner, lockTimeout())
+	l, err := acquireCtx(ctx, rel, ActivateOwner, lockTimeout())
 	if err != nil {
+		if ctx.Err() != nil {
+			fmt.Fprintln(out, "activate: interrupted")
+			return exitInterrupted
+		}
 		fmt.Fprintf(out, "activate: %s is busy syncing, try again shortly\n", rel)
 		return 1
 	}
@@ -303,6 +311,29 @@ func ActivateNowContext(ctx context.Context, rel string, out io.Writer) int {
 		return 0
 	}
 	return 1
+}
+
+// exitInterrupted is the conventional status for a run ended by SIGINT.
+const exitInterrupted = 130
+
+// acquireCtx is lock.AcquireFrom that gives up as soon as ctx is done, so a
+// signal trapped by the caller can still end a long wait. It polls with
+// zero-timeout attempts, which keeps the lock package's stale reclaim.
+func acquireCtx(ctx context.Context, rel, from string, timeout time.Duration) (*lock.Lock, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		l, err := lock.AcquireFrom(rel, from, 0)
+		if err == nil || !lock.IsBusy(err) || time.Now().After(deadline) {
+			return l, err
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // runActivate runs dir/activate for rel, logging its output to
@@ -359,7 +390,7 @@ func runActivate(parent context.Context, dir, rel, oldRev string, tee io.Writer)
 		event(activity.StatusError, msg)
 		say("activate: " + msg)
 		return false
-	case parent.Err() != nil:
+	case parent.Err() != nil && err != nil:
 		msg := fmt.Sprintf("./activate interrupted after %s, see %s", took, logPath)
 		event(activity.StatusError, msg)
 		say("activate: " + msg)

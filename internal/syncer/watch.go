@@ -61,7 +61,9 @@ func Watch(o WatchOptions) int {
 	}
 
 	o.Announce(o.Stop)
-	o.AfterAnnounce()
+	if !stopped(o.Stop) {
+		o.AfterAnnounce()
+	}
 	last := o.Now()
 	for {
 		o.Sleep(o.Interval)
@@ -84,7 +86,9 @@ func Watch(o WatchOptions) int {
 		if now.Sub(last) > o.Interval+o.Slack {
 			activity.AppendDebug("watch: woke after " + now.Sub(last).Round(time.Second).String() + ", announcing")
 			o.Announce(o.Stop)
-			o.AfterAnnounce()
+			if !stopped(o.Stop) {
+				o.AfterAnnounce()
+			}
 			now = o.Now()
 		}
 		last = now

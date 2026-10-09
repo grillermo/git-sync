@@ -365,3 +365,35 @@ func TestActivateNowCancelKillsTheScriptAndReleasesLocks(t *testing.T) {
 		t.Errorf("script %d still running", pid)
 	}
 }
+
+func TestActivateNowIsInterruptibleWhileWaitingForTheDrainLock(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	writeActivate(t, repo, "true")
+	held, err := lock.Acquire(".activate", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	done := make(chan int)
+	var out bytes.Buffer
+	go func() { done <- syncer.ActivateNowContext(ctx, "group/proj", &out) }()
+	select {
+	case code := <-done:
+		if code != 130 {
+			t.Errorf("code = %d, want 130", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("still waiting for the lock after cancel")
+	}
+	if _, still := lock.Held(".activate"); !still {
+		t.Error("released a drain lock it never took")
+	}
+	if _, h := lock.Held("group/proj"); h {
+		t.Error("repo lock taken or leaked")
+	}
+}

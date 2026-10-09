@@ -826,7 +826,6 @@ func cmdHook(args []string, stderr io.Writer) int {
 	}
 }
 
-// cmdUnlock clears a receiver lock left behind by a receive that died.
 var errNotInRepo = errors.New("not inside a git repo; name one")
 
 // currentRel is the selected-repo relpath of the repo containing the
@@ -851,6 +850,7 @@ func currentRel(cfg config.Config) (string, error) {
 	return rc.RepoRel(root)
 }
 
+// cmdUnlock clears a receiver lock left behind by a receive that died.
 func cmdUnlock(args []string, stdout, stderr io.Writer) int {
 	cfg, err := config.Load()
 	if err != nil {
@@ -982,6 +982,10 @@ func cmdActivate(args []string, stdout, stderr io.Writer) int {
 	// lock would refuse commits for minutes).
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go func() { // a second Ctrl-C then kills us outright
+		<-ctx.Done()
+		stop()
+	}()
 	code := syncer.ActivateNowContext(ctx, rel, stdout)
 	// Entries queued while this run held the drain lock found their drainer
 	// exiting on the busy lock; start one now the locks are released.
