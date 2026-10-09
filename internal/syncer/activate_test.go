@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/grillermo/git-sync/internal/activity"
+	"github.com/grillermo/git-sync/internal/lock"
 	"github.com/grillermo/git-sync/internal/syncer"
 	"github.com/grillermo/git-sync/internal/testutil"
 )
@@ -195,4 +196,78 @@ func TestConcurrentEnqueuesOfOneRepoYieldOneEntry(t *testing.T) {
 	if q := syncer.ActivateQueue(); len(q) != 1 {
 		t.Fatalf("queue = %+v, want exactly one entry", q)
 	}
+}
+
+func TestDrainersNeverRunTwoActivatesAtOnce(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	for _, rel := range []string{"a", "b", "c"} {
+		dir := sb.MakeRepo(rel)
+		writeActivate(t, dir, `echo start >> "$HOME/runs"; sleep 0.2; echo end >> "$HOME/runs"`)
+	}
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	for _, rel := range []string{"a", "b", "c"} {
+		_ = syncer.EnqueueActivate(rel, "r")
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); syncer.DrainActivate() }()
+	}
+	wg.Wait()
+
+	b, err := os.ReadFile(filepath.Join(sb.Home, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), strings.Repeat("start\nend\n", 3); got != want {
+		t.Errorf("runs overlapped or went missing:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestASyncLandingMidRunActivatesAgainAfter(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	writeActivate(t, repo, `echo run >> "$HOME/runs"; touch "$HOME/started"; sleep 0.5`)
+	_ = syncer.EnqueueActivate("group/proj", "r1")
+
+	done := make(chan int)
+	go func() { done <- syncer.DrainActivate() }()
+	waitForFile(t, filepath.Join(sb.Home, "started"), 5*time.Second)
+	if err := syncer.EnqueueActivate("group/proj", "r2"); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+
+	b, _ := os.ReadFile(filepath.Join(sb.Home, "runs"))
+	if n := strings.Count(string(b), "run\n"); n != 2 {
+		t.Errorf("./activate ran %d times, want 2 (once more for the mid-run sync)", n)
+	}
+}
+
+func TestDrainPostponesARepoThatIsMidReceive(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	t.Setenv("GITSYNC_LOCK_TIMEOUT", "50ms")
+	writeActivate(t, repo, `touch "$HOME/ran"`)
+	l, err := lock.AcquireFrom("group/proj", "peer.example", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
+	_ = syncer.EnqueueActivate("group/proj", "oldrev")
+
+	if code := syncer.DrainActivate(); code != 0 {
+		t.Fatalf("DrainActivate = %d, want 0", code)
+	}
+	if _, err := os.Stat(filepath.Join(sb.Home, "ran")); err == nil {
+		t.Error("ran ./activate under a receive")
+	}
+	q := syncer.ActivateQueue()
+	if len(q) != 1 || q[0].Rel != "group/proj" || q[0].OldRev != "oldrev" {
+		t.Errorf("queue = %+v, want the postponed repo still queued from oldrev", q)
+	}
+	testutil.AssertEvent(t, activity.OpActivate, activity.StatusSkip, "postponed")
 }

@@ -198,7 +198,11 @@ func DrainActivate() int {
 }
 
 // drainQueue runs entries until none are left. Reports true if it stopped
-// early because a repo was busy receiving.
+// early because a repo was busy receiving. Stopping the whole round on one
+// busy repo (rather than skipping to the next) is deliberate: the busy
+// repo's receive starts its own drainer when it finishes, which resumes the
+// rest of the queue, and the postponed entry keeps its place by staying
+// queued.
 func drainQueue(cfg config.Config) (postponed bool) {
 	for {
 		q, ok := takeOldestActivate()

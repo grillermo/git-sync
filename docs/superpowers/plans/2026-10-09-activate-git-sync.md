@@ -664,7 +664,7 @@ These pin the behaviour Task 2's code already implements. If one fails, fix the 
 **Files:**
 - Test: `internal/syncer/activate_test.go` (add import `github.com/grillermo/git-sync/internal/lock`, `sync`)
 
-- [ ] **Step 1: Write the tests**
+- [x] **Step 1: Write the tests**
 
 ```go
 func TestDrainersNeverRunTwoActivatesAtOnce(t *testing.T) {
@@ -741,12 +741,12 @@ func TestDrainPostponesARepoThatIsMidReceive(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run**
+- [x] **Step 2: Run**
 
 Run: `go test -race -run 'Drain|MidRun' ./internal/syncer/`
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add internal/syncer/activate_test.go
