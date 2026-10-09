@@ -166,6 +166,12 @@ func SpawnRetry(self string) error {
 	return spawnDetached(self, "retry")
 }
 
+// SpawnActivateDrain starts `self activate --drain` detached, for the same
+// reason SpawnRetry is detached: receive runs under a peer's ssh session.
+func SpawnActivateDrain(self string) error {
+	return spawnDetached(self, "activate", "--drain")
+}
+
 func spawnDetached(self string, args ...string) error {
 	logf, err := os.OpenFile(config.DebugLogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {

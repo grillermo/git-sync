@@ -32,6 +32,10 @@ type WatchOptions struct {
 	Now      func() time.Time
 	Sleep    func(time.Duration)
 	Announce func(stop <-chan struct{})
+	// AfterAnnounce runs after every announce. The command layer uses it to
+	// start the activate drainer, which also picks up anything a crashed
+	// drainer left queued.
+	AfterAnnounce func()
 
 	// Stop ends Watch with exit 0 at the next safe point: at once when
 	// idle, and between steps when announcing.
@@ -57,6 +61,7 @@ func Watch(o WatchOptions) int {
 	}
 
 	o.Announce(o.Stop)
+	o.AfterAnnounce()
 	last := o.Now()
 	for {
 		o.Sleep(o.Interval)
@@ -79,6 +84,7 @@ func Watch(o WatchOptions) int {
 		if now.Sub(last) > o.Interval+o.Slack {
 			activity.AppendDebug("watch: woke after " + now.Sub(last).Round(time.Second).String() + ", announcing")
 			o.Announce(o.Stop)
+			o.AfterAnnounce()
 			now = o.Now()
 		}
 		last = now
@@ -111,5 +117,8 @@ func (o *WatchOptions) defaults() {
 	}
 	if o.Announce == nil {
 		o.Announce = func(stop <-chan struct{}) { announce(stop) }
+	}
+	if o.AfterAnnounce == nil {
+		o.AfterAnnounce = func() {}
 	}
 }

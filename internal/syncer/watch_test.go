@@ -3,6 +3,7 @@ package syncer_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,5 +153,20 @@ func TestWatchUsesRealTimeByDefault(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a stopped Watch kept sleeping")
+	}
+}
+
+func TestWatchRunsAfterAnnounceAfterEveryAnnounce(t *testing.T) {
+	c := &fakeClock{now: time.Unix(1e9, 0), asleep: []time.Duration{0, 8 * time.Hour, 0}}
+	var order []string
+	syncer.Watch(syncer.WatchOptions{
+		Interval: 15 * time.Second, Slack: time.Minute,
+		BinPath: fakeBin(t), StillWanted: wantedFor(c, 3),
+		Now: c.Now, Sleep: c.Sleep,
+		Announce:      func(<-chan struct{}) { order = append(order, "announce") },
+		AfterAnnounce: func() { order = append(order, "after") },
+	})
+	if got := strings.Join(order, ","); got != "announce,after,announce,after" {
+		t.Errorf("order = %s, want announce,after twice", got)
 	}
 }

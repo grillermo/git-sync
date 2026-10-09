@@ -1065,7 +1065,7 @@ git commit -m "feat(activate): run ./activate by hand; name it in the commit hoo
 - Modify: `cmd/git-sync/main.go` (usage + dispatch), `cmd/git-sync/stubs.go` (`cmdReceive`, `cmdAnnounce`, `cmdWatch`, `cmdUnlock`, new `cmdActivate`)
 - Test: `internal/syncer/watch_test.go`
 
-- [ ] **Step 1: Write the failing watch test**
+- [x] **Step 1: Write the failing watch test**
 
 ```go
 func TestWatchRunsAfterAnnounceAfterEveryAnnounce(t *testing.T) {
@@ -1086,12 +1086,12 @@ func TestWatchRunsAfterAnnounceAfterEveryAnnounce(t *testing.T) {
 
 (add `strings` to the imports).
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `go test -run TestWatchRunsAfterAnnounce ./internal/syncer/`
 Expected: build error `unknown field AfterAnnounce`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `watch.go`: add to `WatchOptions` below `Announce`:
 
@@ -1213,12 +1213,12 @@ and add a usage line after `unlock`:
   git-sync activate [<repo>]           run a repo's ./activate now (default: this repo)
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `make check`
 Expected: vet clean, `gofmt -l` prints nothing, all tests PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 gofmt -w cmd internal

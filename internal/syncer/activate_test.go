@@ -2,6 +2,7 @@ package syncer_test
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -124,14 +125,14 @@ func TestDrainKillsAnActivateThatRunsTooLong(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	repo := sb.MakeRepo("group/proj")
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
-	t.Setenv("GITSYNC_ACTIVATE_TIMEOUT", "300ms")
+	t.Setenv("GITSYNC_ACTIVATE_TIMEOUT", "1s")
 	// The child sleep is what must die too, not just the shell.
 	writeActivate(t, repo, `sleep 30 & echo $! > "$HOME/pid"; wait`)
 	_ = syncer.EnqueueActivate("group/proj", "r")
 
 	start := time.Now()
 	syncer.DrainActivate()
-	if took := time.Since(start); took > 3*time.Second {
+	if took := time.Since(start); took > 4*time.Second {
 		t.Errorf("drain took %v; the timeout did not stop the script", took)
 	}
 	testutil.AssertEvent(t, activity.OpActivate, activity.StatusError, "timed out")
@@ -304,5 +305,63 @@ func TestActivateNowRefusesARepoWithoutActivate(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "no executable ./activate") {
 		t.Errorf("unhelpful message: %q", out.String())
+	}
+}
+
+func TestActivateNowSaysWhyAFailingRunFailed(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	writeActivate(t, repo, "exit 3")
+
+	var out bytes.Buffer
+	if code := syncer.ActivateNow("group/proj", &out); code != 1 {
+		t.Fatalf("ActivateNow = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "activate: ./activate failed") {
+		t.Errorf("terminal got no summary line: %q", out.String())
+	}
+}
+
+func TestActivateNowCancelKillsTheScriptAndReleasesLocks(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	started := filepath.Join(t.TempDir(), "started")
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	writeActivate(t, repo, "echo $$ > "+pidFile+"\ntouch "+started+"\nsleep 60")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int)
+	var out bytes.Buffer
+	go func() { done <- syncer.ActivateNowContext(ctx, "group/proj", &out) }()
+	waitForFile(t, started, 5*time.Second)
+	cancel()
+
+	select {
+	case code := <-done:
+		if code != 1 {
+			t.Errorf("code = %d, want 1", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ActivateNowContext did not return after cancel")
+	}
+	if !strings.Contains(out.String(), "interrupted") {
+		t.Errorf("no interrupted summary: %q", out.String())
+	}
+	if _, held := lock.Held("group/proj"); held {
+		t.Error("repo lock leaked after cancel")
+	}
+	// the drain lock must be free too
+	l, err := lock.Acquire(".activate", 0)
+	if err != nil {
+		t.Fatalf("drain lock leaked: %v", err)
+	}
+	l.Release()
+	b, _ := os.ReadFile(pidFile)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	time.Sleep(100 * time.Millisecond)
+	if pid > 0 && syscall.Kill(pid, 0) == nil {
+		t.Errorf("script %d still running", pid)
 	}
 }

@@ -16,6 +16,7 @@ Usage:
   git-sync uninstall [--purge] [--local]  stop syncing (mesh-wide by default; --local limits it to this machine; --purge also deletes config and history)
   git-sync report [flags]              browse sync activity, grouped by repo
   git-sync unlock [<repo>]             clear a stuck sync lock (default: this repo)
+  git-sync activate [<repo>]           run a repo's ./activate now (default: this repo)
   git-sync service install|uninstall|status [--local]
                                        the login service that tells the mesh a machine is back
 
@@ -44,6 +45,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdReport(args[1:], stdout, stderr)
 	case "unlock":
 		return cmdUnlock(args[1:], stdout, stderr)
+	case "activate":
+		return cmdActivate(args[1:], stdout, stderr)
 	case "service":
 		return cmdService(args[1:], stdout, stderr)
 

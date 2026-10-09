@@ -827,6 +827,30 @@ func cmdHook(args []string, stderr io.Writer) int {
 }
 
 // cmdUnlock clears a receiver lock left behind by a receive that died.
+var errNotInRepo = errors.New("not inside a git repo; name one")
+
+// currentRel is the selected-repo relpath of the repo containing the
+// working directory, for commands whose <repo> argument is optional.
+func currentRel(cfg config.Config) (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	root, err := gitcmd.Toplevel(wd)
+	if err != nil {
+		return "", errNotInRepo
+	}
+	// git resolves symlinks in --show-toplevel (e.g. macOS's /var ->
+	// /private/var), but base_dir as configured is not resolved.
+	// Resolve here too, or a repo under a symlinked ancestor looks
+	// "outside base_dir". Mirrors syncer's repoRel.
+	rc := cfg
+	if resolved, err := filepath.EvalSymlinks(rc.BaseDir); err == nil {
+		rc.BaseDir = resolved
+	}
+	return rc.RepoRel(root)
+}
+
 func cmdUnlock(args []string, stdout, stderr io.Writer) int {
 	cfg, err := config.Load()
 	if err != nil {
@@ -837,26 +861,12 @@ func cmdUnlock(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		rel = args[0]
 	} else {
-		wd, err := os.Getwd()
-		if err != nil {
-			fmt.Fprintln(stderr, "unlock:", err)
-			return 1
-		}
-		root, err := gitcmd.Toplevel(wd)
-		if err != nil {
-			fmt.Fprintln(stderr, "unlock: not inside a git repo; name one: git-sync unlock <repo>")
-			return 2
-		}
-		// git resolves symlinks in --show-toplevel (e.g. macOS's /var ->
-		// /private/var), but base_dir as configured is not resolved.
-		// Resolve here too, or a repo under a symlinked ancestor looks
-		// "outside base_dir". Mirrors syncer's repoRel.
-		rc := cfg
-		if resolved, err := filepath.EvalSymlinks(rc.BaseDir); err == nil {
-			rc.BaseDir = resolved
-		}
-		if rel, err = rc.RepoRel(root); err != nil {
-			fmt.Fprintln(stderr, "unlock:", err)
+		if rel, err = currentRel(cfg); err != nil {
+			if errors.Is(err, errNotInRepo) {
+				fmt.Fprintln(stderr, "unlock: not inside a git repo; name one: git-sync unlock <repo>")
+			} else {
+				fmt.Fprintln(stderr, "unlock:", err)
+			}
 			return 2
 		}
 	}
@@ -918,6 +928,7 @@ func cmdReceive(args []string, stderr io.Writer) int {
 		return 2
 	}
 	code := syncer.Receive(repo, *from)
+	kickActivate()
 
 	// Being notified proves this machine is back online, so anything it
 	// failed to deliver while it was away can go now - in the background, so
@@ -926,6 +937,56 @@ func cmdReceive(args []string, stderr io.Writer) int {
 		if self, err := os.Executable(); err == nil {
 			_ = syncer.SpawnRetry(self)
 		}
+	}
+	return code
+}
+
+// kickActivate starts the activate drainer if anything is queued. Called
+// only once the receive lock is released, so the drainer can take it.
+func kickActivate() {
+	if !syncer.HasActivateQueue() {
+		return
+	}
+	if self, err := os.Executable(); err == nil {
+		_ = syncer.SpawnActivateDrain(self)
+	}
+}
+
+// cmdActivate is `git-sync activate [<repo>]` for humans, and
+// `git-sync activate --drain` for the background drainer.
+func cmdActivate(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 1 && args[0] == "--drain" {
+		return syncer.DrainActivate()
+	}
+	if len(args) > 1 {
+		fmt.Fprintln(stderr, "usage: git-sync activate [<repo>]")
+		return 2
+	}
+	rel := ""
+	if len(args) == 1 {
+		rel = args[0]
+	} else {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintln(stderr, "activate:", err)
+			return 1
+		}
+		if rel, err = currentRel(cfg); err != nil {
+			fmt.Fprintln(stderr, "activate:", err)
+			return 2
+		}
+	}
+
+	// Ctrl-C or SIGTERM cancels the context, which kills the script's
+	// process group and lets ActivateNow release its locks (a leaked repo
+	// lock would refuse commits for minutes).
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	code := syncer.ActivateNowContext(ctx, rel, stdout)
+	// Entries queued while this run held the drain lock found their drainer
+	// exiting on the busy lock; start one now the locks are released.
+	if ctx.Err() == nil {
+		kickActivate()
 	}
 	return code
 }
@@ -943,7 +1004,9 @@ func cmdAnnounce(args []string, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: git-sync announce")
 		return 2
 	}
-	return syncer.Announce()
+	code := syncer.Announce()
+	kickActivate()
+	return code
 }
 
 // cmdWatch is what the login service runs. launchd and systemd stop it with
@@ -966,7 +1029,8 @@ func cmdWatch(args []string, stderr io.Writer) int {
 			_, ok := setup.ServiceInstalled()
 			return ok
 		},
-		Stop: stop,
+		Stop:          stop,
+		AfterAnnounce: kickActivate,
 	})
 }
 

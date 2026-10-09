@@ -245,7 +245,7 @@ func runQueued(cfg config.Config, q QueuedActivate) bool {
 	stop := heartbeat(l)
 	defer stop()
 
-	runActivate(dir, q.Rel, q.OldRev, nil)
+	runActivate(context.Background(), dir, q.Rel, q.OldRev, nil)
 	return true
 }
 
@@ -255,6 +255,12 @@ func runQueued(cfg config.Config, q QueuedActivate) bool {
 // It holds the same machine-wide and per-repo locks as the drainer, so the
 // two can never run (or write the log) at once.
 func ActivateNow(rel string, out io.Writer) int {
+	return ActivateNowContext(context.Background(), rel, out)
+}
+
+// ActivateNowContext is ActivateNow that stops the script (its whole process
+// group) when ctx is cancelled, still releasing its locks on the way out.
+func ActivateNowContext(ctx context.Context, rel string, out io.Writer) int {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(out, "activate:", err)
@@ -293,7 +299,7 @@ func ActivateNow(rel string, out io.Writer) int {
 	defer stopL()
 
 	dropQueuedActivate(rel) // this run covers it
-	if runActivate(dir, rel, emptyTree, out) {
+	if runActivate(ctx, dir, rel, emptyTree, out) {
 		return 0
 	}
 	return 1
@@ -302,7 +308,7 @@ func ActivateNow(rel string, out io.Writer) int {
 // runActivate runs dir/activate for rel, logging its output to
 // ActivateLogPath (and also to tee, if given) and the outcome to the
 // activity log. Reports whether it succeeded.
-func runActivate(dir, rel, oldRev string, tee io.Writer) bool {
+func runActivate(parent context.Context, dir, rel, oldRev string, tee io.Writer) bool {
 	script, _ := activateScript(dir)
 	newRev, _ := gitcmd.Run(dir, "rev-parse", "HEAD")
 	logPath := ActivateLogPath(rel)
@@ -325,7 +331,7 @@ func runActivate(dir, rel, oldRev string, tee io.Writer) bool {
 	if tee != nil {
 		out = io.MultiWriter(logf, tee)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), activateTimeout())
+	ctx, cancel := context.WithTimeout(parent, activateTimeout())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, script)
 	cmd.Dir = dir
@@ -340,12 +346,28 @@ func runActivate(dir, rel, oldRev string, tee io.Writer) bool {
 	took := time.Since(start).Round(100 * time.Millisecond)
 	fmt.Fprintf(logf, "<== %v after %s\n\n", errOrOK(err), took)
 
+	// say tells a terminal user why the run ended badly; the drainer has no
+	// terminal and relies on the activity log alone.
+	say := func(msg string) {
+		if tee != nil {
+			fmt.Fprintln(tee, msg)
+		}
+	}
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		event(activity.StatusError, fmt.Sprintf("./activate timed out after %s, see %s", took, logPath))
+		msg := fmt.Sprintf("./activate timed out after %s, see %s", took, logPath)
+		event(activity.StatusError, msg)
+		say("activate: " + msg)
+		return false
+	case parent.Err() != nil:
+		msg := fmt.Sprintf("./activate interrupted after %s, see %s", took, logPath)
+		event(activity.StatusError, msg)
+		say("activate: " + msg)
 		return false
 	case err != nil:
-		event(activity.StatusError, fmt.Sprintf("./activate failed (%v) after %s, see %s", err, took, logPath))
+		msg := fmt.Sprintf("./activate failed (%v) after %s, see %s", err, took, logPath)
+		event(activity.StatusError, msg)
+		say("activate: " + msg)
 		return false
 	}
 	event(activity.StatusOK, fmt.Sprintf("activated %s..%s in %s", shortRev(oldRev), shortRev(newRev), took))
