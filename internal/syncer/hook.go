@@ -116,8 +116,13 @@ func Block(dir string, w io.Writer) int {
 	if from == "" {
 		from = "another machine"
 	}
-	fmt.Fprintf(w, "git-sync: %s is receiving changes from %s (started %s ago).\n",
-		rel, from, owner.Age().Round(time.Second))
+	if owner.From == ActivateOwner {
+		fmt.Fprintf(w, "git-sync: %s is running its ./activate (started %s ago).\n",
+			rel, owner.Age().Round(time.Second))
+	} else {
+		fmt.Fprintf(w, "git-sync: %s is receiving changes from %s (started %s ago).\n",
+			rel, from, owner.Age().Round(time.Second))
+	}
 	fmt.Fprintf(w, "Wait a moment and try again. If this is stuck: git-sync unlock %s\n", rel)
 	return 1
 }

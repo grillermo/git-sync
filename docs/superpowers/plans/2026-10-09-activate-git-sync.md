@@ -909,7 +909,7 @@ git commit -m "feat(activate): queue ./activate when a receive moves HEAD"
 - Modify: `internal/syncer/activate.go`, `internal/syncer/hook.go` (`Block`)
 - Test: `internal/syncer/activate_test.go`, `internal/syncer/hook_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `activate_test.go` (add import `bytes`):
 
@@ -972,12 +972,12 @@ func TestBlockNamesARunningActivate(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `go test -run 'ActivateNow|BlockNames' ./internal/syncer/`
 Expected: build error `undefined: syncer.ActivateNow`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `activate.go`:
 
@@ -1044,12 +1044,12 @@ func ActivateNow(rel string, out io.Writer) int {
 	fmt.Fprintf(w, "Wait a moment and try again. If this is stuck: git-sync unlock %s\n", rel)
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `go test -race ./internal/syncer/`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 gofmt -w internal/syncer

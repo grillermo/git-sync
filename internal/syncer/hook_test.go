@@ -261,3 +261,22 @@ func TestHookDoesNotBroadcastWhileReceiving(t *testing.T) {
 	}
 	testutil.AssertEvent(t, activity.OpHook, activity.StatusWarn, "not broadcast")
 }
+
+func TestBlockNamesARunningActivate(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	l, err := lock.AcquireFrom("group/proj", syncer.ActivateOwner, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
+
+	var out bytes.Buffer
+	if code := syncer.Block(repo, &out); code != 1 {
+		t.Fatalf("Block = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "running its ./activate") {
+		t.Errorf("message %q should say ./activate is running", out.String())
+	}
+}

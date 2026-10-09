@@ -249,6 +249,56 @@ func runQueued(cfg config.Config, q QueuedActivate) bool {
 	return true
 }
 
+// ActivateNow is `git-sync activate <repo>` from a terminal: it waits for
+// any running drainer, then runs rel's ./activate in the foreground with
+// its output on out as well as in the log. It treats every file as changed.
+// It holds the same machine-wide and per-repo locks as the drainer, so the
+// two can never run (or write the log) at once.
+func ActivateNow(rel string, out io.Writer) int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(out, "activate:", err)
+		return 1
+	}
+	if err := cfg.ValidateRel(rel); err != nil {
+		fmt.Fprintln(out, "activate:", err)
+		return 2
+	}
+	if !cfg.IsSelected(rel) {
+		fmt.Fprintf(out, "activate: %s is not synced on this machine\n", rel)
+		return 1
+	}
+	dir := cfg.RepoPath(rel)
+	if _, ok := activateScript(dir); !ok {
+		fmt.Fprintf(out, "activate: %s has no executable ./activate\n", rel)
+		return 1
+	}
+
+	g, err := lock.Acquire(drainLock, activateTimeout()+time.Minute)
+	if err != nil {
+		fmt.Fprintln(out, "activate: another ./activate is still running:", err)
+		return 1
+	}
+	defer g.Release()
+	stopG := heartbeat(g)
+	defer stopG()
+
+	l, err := lock.AcquireFrom(rel, ActivateOwner, lockTimeout())
+	if err != nil {
+		fmt.Fprintf(out, "activate: %s is busy syncing, try again shortly\n", rel)
+		return 1
+	}
+	defer l.Release()
+	stopL := heartbeat(l)
+	defer stopL()
+
+	dropQueuedActivate(rel) // this run covers it
+	if runActivate(dir, rel, emptyTree, out) {
+		return 0
+	}
+	return 1
+}
+
 // runActivate runs dir/activate for rel, logging its output to
 // ActivateLogPath (and also to tee, if given) and the outcome to the
 // activity log. Reports whether it succeeded.

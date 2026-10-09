@@ -1,6 +1,7 @@
 package syncer_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -270,4 +271,38 @@ func TestDrainPostponesARepoThatIsMidReceive(t *testing.T) {
 		t.Errorf("queue = %+v, want the postponed repo still queued from oldrev", q)
 	}
 	testutil.AssertEvent(t, activity.OpActivate, activity.StatusSkip, "postponed")
+}
+
+func TestActivateNowTreatsEveryFileAsChanged(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	writeActivate(t, repo, `git diff --name-only "$GITSYNC_OLD_REV" "$GITSYNC_NEW_REV"`)
+	_ = syncer.EnqueueActivate("group/proj", "r")
+
+	var out bytes.Buffer
+	if code := syncer.ActivateNow("group/proj", &out); code != 0 {
+		t.Fatalf("ActivateNow = %d, want 0\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "README.md") {
+		t.Errorf("output should list every tracked file, got:\n%s", out.String())
+	}
+	if syncer.HasActivateQueue() {
+		t.Error("a manual run covers the queued entry; it should be gone")
+	}
+	testutil.AssertEvent(t, activity.OpActivate, activity.StatusOK, "everything")
+}
+
+func TestActivateNowRefusesARepoWithoutActivate(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+
+	var out bytes.Buffer
+	if code := syncer.ActivateNow("group/proj", &out); code != 1 {
+		t.Fatalf("ActivateNow = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "no executable ./activate") {
+		t.Errorf("unhelpful message: %q", out.String())
+	}
 }
