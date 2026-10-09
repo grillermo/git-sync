@@ -108,8 +108,8 @@ filename, that file is not stub code, it's the real implementation of every
 removes the login service mesh-wide, or with `--local` just here, `activate
 [<repo>]` — runs a repo's `./activate` now); six are
 invoked by machines and deliberately hidden from `-h` output (`hook`, `push`,
-`receive`, `retry`, `announce`, `watch`; `activate --drain` is the machine
-form of the twelfth). Key-only ssh auth means nothing else needs to shell out to
+`receive`, `retry`, `announce`, `watch`; `activate --drain` is the hidden
+machine form of `activate`). Key-only ssh auth means nothing else needs to shell out to
 git-sync itself, so there is no `askpass`/`savepass` anymore.
 
 Package layering, leaves to composition:
