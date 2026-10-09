@@ -348,3 +348,19 @@ func errOrOK(err error) string {
 	}
 	return err.Error()
 }
+
+// queueActivateIfMoved queues rel's ./activate if it has one and HEAD has
+// moved off before. Only queues: the command layer starts the drainer once
+// the receive lock is released.
+func queueActivateIfMoved(rel, dir, before string) {
+	if _, ok := activateScript(dir); !ok {
+		return
+	}
+	after, err := gitcmd.Run(dir, "rev-parse", "HEAD")
+	if err != nil || before == "" || after == before {
+		return
+	}
+	if err := EnqueueActivate(rel, before); err != nil {
+		activity.AppendDebug("activate: could not queue " + rel + ": " + err.Error())
+	}
+}

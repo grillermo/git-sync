@@ -763,7 +763,7 @@ git commit -m "test(activate): pin serial drain, mid-run requeue, busy repo"
 - Modify: `internal/syncer/receive.go` (`syncRepo`, around the `FastForward` call and the stash-pop block)
 - Test: `internal/syncer/receive_test.go`
 
-- [ ] **Step 1: Write the failing tests** (append to `receive_test.go`; add import `os` if missing)
+- [x] **Step 1: Write the failing tests** (append to `receive_test.go`; add import `os` if missing)
 
 ```go
 // peerCommitActivate commits an executable ./activate from the peer clone
@@ -837,12 +837,12 @@ func TestReceiveQueuesNothingWhenDiverged(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `go test -run 'ReceiveQueues' ./internal/syncer/`
 Expected: `TestReceiveQueuesActivateWhenHeadMoves` FAILS (queue empty); the others pass.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `syncRepo` (`internal/syncer/receive.go`), replace the fast-forward `if/else` with:
 
@@ -890,12 +890,12 @@ func queueActivateIfMoved(rel, dir, before string) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `go test -race ./internal/syncer/ -run 'Receive'`
 Expected: PASS (all old receive tests too).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 gofmt -w internal/syncer

@@ -161,12 +161,15 @@ func syncRepo(cfg config.Config, rel, dir string) int {
 		log(activity.StatusOK, branch, "stashed dirty working tree")
 	}
 
+	before, _ := gitcmd.Run(dir, "rev-parse", "HEAD")
+	fastForwarded := false
 	if err := gitcmd.FastForward(dir, remote, branch); err != nil {
 		// The fetch already updated the remote-tracking refs, so the user has
 		// everything they need locally to merge by hand.
 		log(activity.StatusWarn, branch, "diverged from "+remote+"/"+branch+
 			", fetched only, manual merge needed")
 	} else {
+		fastForwarded = true
 		log(activity.StatusOK, branch, "fast-forwarded "+branch+" from "+remote)
 	}
 
@@ -179,6 +182,12 @@ func syncRepo(cfg config.Config, rel, dir string) int {
 		} else {
 			log(activity.StatusOK, branch, "restored stashed changes")
 		}
+	}
+
+	// After the pop: ./activate may be untracked-then-committed, and the
+	// stash would have hidden it a moment ago.
+	if fastForwarded {
+		queueActivateIfMoved(rel, dir, before)
 	}
 	return 0
 }

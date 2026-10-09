@@ -362,3 +362,73 @@ func TestReceiveReportsAFailedFetch(t *testing.T) {
 	}
 	testutil.AssertEvent(t, activity.OpReceive, activity.StatusError, "fetch")
 }
+
+// peerCommitActivate commits an executable ./activate from the peer clone
+// and pushes it: "the other machine added an activate step".
+func peerCommitActivate(t *testing.T, sb *testutil.Sandbox, rel, body string) {
+	t.Helper()
+	dst := filepath.Join(sb.Home, "peer", rel)
+	writeActivate(t, dst, body)
+	sb.Git(dst, "add", "activate")
+	sb.Git(dst, "commit", "-qm", "add activate")
+	sb.Git(dst, "push", "-q")
+}
+
+func TestReceiveQueuesActivateWhenHeadMoves(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.PeerClone("group/proj")
+	before := strings.TrimSpace(sb.Git(repo, "rev-parse", "HEAD"))
+	peerCommitActivate(t, sb, "group/proj", "true")
+
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
+		t.Fatalf("Receive = %d, want 0", code)
+	}
+	q := syncer.ActivateQueue()
+	if len(q) != 1 || q[0].Rel != "group/proj" || q[0].OldRev != before {
+		t.Fatalf("queue = %+v, want group/proj from %s", q, before)
+	}
+}
+
+func TestReceiveQueuesNothingWhenNothingArrived(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	writeActivate(t, repo, "true")
+	sb.Git(repo, "add", "activate")
+	sb.Git(repo, "commit", "-qm", "add activate")
+	sb.Git(repo, "push", "-q")
+
+	syncer.Receive("group/proj", "peer.example")
+	if syncer.HasActivateQueue() {
+		t.Error("queued an activate though HEAD did not move")
+	}
+}
+
+func TestReceiveQueuesNothingWithoutAnActivate(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.PeerClone("group/proj")
+	sb.PeerCommit("group/proj", "from-peer")
+
+	syncer.Receive("group/proj", "peer.example")
+	if syncer.HasActivateQueue() {
+		t.Error("queued an activate for a repo that has none")
+	}
+}
+
+func TestReceiveQueuesNothingWhenDiverged(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.PeerClone("group/proj")
+	peerCommitActivate(t, sb, "group/proj", "true")
+	testutil.Commit(t, sb, repo, "divergent local commit")
+
+	syncer.Receive("group/proj", "peer.example")
+	if syncer.HasActivateQueue() {
+		t.Error("queued an activate though the fast-forward failed")
+	}
+}
