@@ -73,10 +73,10 @@ pattern, which `file_server` and `ipad-send` already follow:
 Work per repo: `file_server` and `ipad-send` need only the `activate` file.
 `ntfyllermo`, `serve-html-markdown` and `rulinky` run in the foreground
 today and have to be converted to the `file_server` shape.
-`after-reboot.sh` keeps calling `./serve` unchanged. Open point: its
-`top-cpu-service-wrapper` registers the serve process's PID for `top_cpu`.
-Once `serve` returns right away, that PID no longer belongs to the running
-server; check how `file_server` already copes before converting the others.
+`after-reboot.sh` now runs `./serve` plainly in pane 1 (no wrapper). Resolved:
+`~/c/server/serve-in-place.sh` starts each server in its own tmux pane through
+`top-cpu-service-wrapper`, so the registry entry `top_cpu` reads names the
+live server's PID rather than the `serve` process that returned.
 
 Out of scope, never get an `activate`: `comunidad-antesis`, `readitsoon`
 (used by other people; deploys stay manual), `server` (Caddy fronts those
