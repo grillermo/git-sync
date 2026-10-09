@@ -55,7 +55,7 @@ Run everything from `/Users/grillermo/c/git-sync`. `NewSandbox` tests must never
 - Create: `internal/syncer/activate.go`
 - Create: `internal/syncer/activate_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `internal/syncer/activate_test.go`:
 
@@ -141,12 +141,12 @@ func TestHasActivateQueue(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `go test -run 'Activate' ./internal/syncer/`
 Expected: FAIL, `undefined: syncer.EnqueueActivate` (build error).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `internal/config/config.go`, after `PendingDir`:
 
@@ -288,12 +288,12 @@ func dropQueuedActivate(rel string) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `go test -run 'Activate' ./internal/syncer/ && go vet ./...`
 Expected: PASS. `takeOldestActivate`/`dropQueuedActivate` are unused until Task 2. `go vet` doesn't flag unused functions, but if a linter complains, carry on.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 gofmt -w internal/config internal/activity internal/syncer

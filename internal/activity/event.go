@@ -8,10 +8,11 @@ import "time"
 type Op string
 
 const (
-	OpHook    Op = "hook"    // a commit fired the hook
-	OpPush    Op = "push"    // pushing to the shared remote
-	OpNotify  Op = "notify"  // telling the peer over ssh
-	OpReceive Op = "receive" // applying what the peer pushed
+	OpHook     Op = "hook"     // a commit fired the hook
+	OpPush     Op = "push"     // pushing to the shared remote
+	OpNotify   Op = "notify"   // telling the peer over ssh
+	OpReceive  Op = "receive"  // applying what the peer pushed
+	OpActivate Op = "activate" // running a repo's ./activate after a sync
 )
 
 // Status is how it turned out.
