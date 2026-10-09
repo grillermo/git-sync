@@ -312,7 +312,7 @@ git commit -m "feat(activate): add the per-machine activate queue"
 - Modify: `internal/syncer/detach_unix.go`
 - Test: `internal/syncer/activate_test.go`
 
-- [ ] **Step 1: Write the failing tests** (append to `activate_test.go`; add imports `strings`, `github.com/grillermo/git-sync/internal/activity`)
+- [x] **Step 1: Write the failing tests** (append to `activate_test.go`; add imports `strings`, `github.com/grillermo/git-sync/internal/activity`)
 
 ```go
 func TestDrainRunsActivateWithTheRevRange(t *testing.T) {
@@ -400,12 +400,12 @@ func TestDrainDropsARepoWithoutActivate(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `go test -run 'Drain' ./internal/syncer/`
 Expected: build error, `undefined: syncer.DrainActivate`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `internal/syncer/detach_unix.go`:
 
@@ -644,12 +644,12 @@ func errOrOK(err error) string {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `go test -race -run 'Activate|Drain' ./internal/syncer/`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 gofmt -w internal/syncer
