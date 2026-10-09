@@ -695,3 +695,52 @@ func TestEndToEndWatchAnnouncesAtStartAndStopsOnSigterm(t *testing.T) {
 		t.Fatal("watch ignored SIGTERM")
 	}
 }
+
+func TestEndToEndCommitRunsActivateOnThePeerOnly(t *testing.T) {
+	bin := buildBinary(t)
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peerhost", "peeruser")
+
+	peer := newMachine(t, bin, "peerhost")
+	peer.clone(t, sb, "group/proj")
+	peer.saveConfig(t, []string{"group/proj"}, []config.Peer{{Host: "machineA", User: "tester"}})
+	installLoopbackSSH(t, sb, peer)
+
+	if err := os.WriteFile(filepath.Join(repo, "activate"),
+		[]byte("#!/bin/sh\necho \"$GITSYNC_NEW_REV\" > \"$HOME/activated\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sb.Git(repo, "add", "activate")
+	sb.Git(repo, "commit", "-qm", "add activate")
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Fatalf("Push = %d, want 0", code)
+	}
+
+	// The peer's receive starts a detached drainer; give it time.
+	marker := filepath.Join(peer.Home, "activated")
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("./activate never ran on the peer; events: %+v", peer.events(t))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	head := strings.TrimSpace(sb.Git(repo, "rev-parse", "HEAD"))
+	testutil.AssertFileContains(t, marker, head)
+	if _, err := os.Stat(filepath.Join(sb.Home, "activated")); err == nil {
+		t.Error("./activate ran on the committing machine too")
+	}
+	// Wait for the drainer's final event so it is not still writing when
+	// the temp dirs are cleaned up.
+	deadline = time.Now().Add(10 * time.Second)
+	for !hasEvent(peer.events(t), activity.OpActivate, activity.StatusOK, "activated") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no activate ok event on the peer: %+v", peer.events(t))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}

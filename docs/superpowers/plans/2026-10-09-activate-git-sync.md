@@ -1231,7 +1231,7 @@ git commit -m "feat(activate): start the drainer after receive, announce and wat
 **Files:**
 - Test: `internal/syncer/e2e_test.go`
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```go
 func TestEndToEndCommitRunsActivateOnThePeerOnly(t *testing.T) {
@@ -1284,12 +1284,12 @@ func TestEndToEndCommitRunsActivateOnThePeerOnly(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run**
+- [x] **Step 2: Run**
 
 Run: `go test -race -run TestEndToEndCommitRunsActivateOnThePeerOnly ./internal/syncer/`
 Expected: PASS. If the marker never appears, check that the loopback stub's routed environment gives the detached drainer the peer's `HOME`/`GITSYNC_HOME`. `spawnDetached` inherits the receive's environment, so it should.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add internal/syncer/e2e_test.go
