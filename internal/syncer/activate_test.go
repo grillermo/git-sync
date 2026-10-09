@@ -3,8 +3,10 @@ package syncer_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -122,7 +124,7 @@ func TestDrainKillsAnActivateThatRunsTooLong(t *testing.T) {
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
 	t.Setenv("GITSYNC_ACTIVATE_TIMEOUT", "300ms")
 	// The child sleep is what must die too, not just the shell.
-	writeActivate(t, repo, `sleep 5 & wait`)
+	writeActivate(t, repo, `sleep 30 & echo $! > "$HOME/pid"; wait`)
 	_ = syncer.EnqueueActivate("group/proj", "r")
 
 	start := time.Now()
@@ -131,6 +133,21 @@ func TestDrainKillsAnActivateThatRunsTooLong(t *testing.T) {
 		t.Errorf("drain took %v; the timeout did not stop the script", took)
 	}
 	testutil.AssertEvent(t, activity.OpActivate, activity.StatusError, "timed out")
+	b, err := os.ReadFile(filepath.Join(sb.Home, "pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) != syscall.ESRCH {
+		if time.Now().After(deadline) {
+			t.Fatalf("child process %d survived the timeout", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func TestDrainDropsARepoNoLongerSelected(t *testing.T) {

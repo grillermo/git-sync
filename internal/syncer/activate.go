@@ -158,7 +158,7 @@ func activateScript(dir string) (string, bool) {
 // activateTimeout bounds one run. GITSYNC_ACTIVATE_TIMEOUT exists for tests.
 func activateTimeout() time.Duration {
 	if s := os.Getenv("GITSYNC_ACTIVATE_TIMEOUT"); s != "" {
-		if d, err := time.ParseDuration(s); err == nil {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
 			return d
 		}
 	}
@@ -299,8 +299,9 @@ func runActivate(dir, rel, oldRev string, tee io.Writer) bool {
 }
 
 // activateEnv is this process's environment for user code: minus git-sync's
-// internal marker (a commit ./activate made would be a real commit), plus
-// the rev range.
+// internal marker, so a commit or push ./activate attempts is treated as a
+// real one and refused by pre-commit/pre-push while the repo lock is held
+// for the run (intended), plus the rev range.
 func activateEnv(oldRev, newRev string) []string {
 	var env []string
 	for _, kv := range os.Environ() {

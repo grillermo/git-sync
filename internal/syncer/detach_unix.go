@@ -3,6 +3,7 @@
 package syncer
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
@@ -21,5 +22,9 @@ func groupAttr() *syscall.SysProcAttr {
 
 // killGroup kills the process group p leads.
 func killGroup(p *os.Process) error {
-	return syscall.Kill(-p.Pid, syscall.SIGKILL)
+	err := syscall.Kill(-p.Pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
 }
