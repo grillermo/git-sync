@@ -1,0 +1,19 @@
+#!/bin/sh
+# Run by git-sync after it lands new commits here: rebuild this machine's
+# git-sync and install it where the hooks and ssh run it from. The watch
+# service sees the replaced binary and restarts itself on it.
+set -eu
+cd "$(dirname "$0")"
+export PATH="/opt/homebrew/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+if [ -n "${GITSYNC_OLD_REV:-}" ] &&
+  git diff --quiet "$GITSYNC_OLD_REV" "${GITSYNC_NEW_REV:-HEAD}" -- cmd internal go.mod go.sum build; then
+  exit 0
+fi
+
+./build "$(go env GOOS)/$(go env GOARCH)"
+installed="${GITSYNC_HOME:-$HOME/.gitsync}/bin/git-sync"
+# Copy then rename: a hook or ssh mid-exec keeps the old file, never a torn one.
+cp bin/git-sync "$installed.new"
+mv "$installed.new" "$installed"
+echo "installed $(pwd)/bin/git-sync -> $installed"
