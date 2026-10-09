@@ -213,7 +213,7 @@ Package layering, leaves to composition:
     activate --drain` after `receive` and `announce`, and `watch` does the
     same via `WatchOptions.AfterAnnounce` (which also picks up anything a
     crash left queued). The drainer takes one machine-wide lock
-    (`locks/.activate`), so runs are serial per machine, and if the lock is
+    (`locks/.activate.lock`), so runs are serial per machine, and if the lock is
     held it just exits — the holder will see the new entry. Each run pops the
     entry *before* running (a sync landing mid-run re-queues the repo) and
     holds the repo's own receive lock with `Owner.From == "./activate"`, so
