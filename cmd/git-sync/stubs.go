@@ -617,7 +617,7 @@ type peerClones struct {
 
 // checkPeer asks every reachable peer which selected repos it has, prints
 // the mismatches per machine, and returns whether to go ahead. The user can
-// quit here with q, just as in the picker: nothing has been written yet, on
+// quit here with q, as with esc in the picker: nothing has been written yet, on
 // any machine. Called once for the whole mesh so that a mismatch on one
 // machine is reported alongside the others rather than behind its own
 // separate confirm prompt. With clone set, it also returns the missing repos
