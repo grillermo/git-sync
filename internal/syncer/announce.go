@@ -77,7 +77,7 @@ func announce(stop <-chan struct{}) int {
 			}
 			for rel := range repos {
 				_ = activity.Append(activity.Event{
-					Repo: rel, Op: activity.OpReceive, Status: activity.StatusError,
+					Repo: rel, Op: activity.OpReceive, Status: activity.StatusOffline,
 					Msg: "could not reach the remote at startup; catches up on the next sync",
 				})
 			}

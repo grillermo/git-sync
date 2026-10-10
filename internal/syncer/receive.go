@@ -107,9 +107,12 @@ func heartbeat(l *lock.Lock) func() {
 
 // syncRepo is the spec's algorithm, inside the lock.
 func syncRepo(cfg config.Config, rel, dir string) int {
+	// One run id for every event this receive writes, so a reader can tell
+	// this receive's warning from an older one (see activity.Event.Run).
+	run := activity.NewRun()
 	log := func(s activity.Status, branch, msg string) {
 		_ = activity.Append(activity.Event{
-			Repo: rel, Op: activity.OpReceive, Status: s, Branch: branch, Msg: msg,
+			Repo: rel, Op: activity.OpReceive, Status: s, Branch: branch, Msg: msg, Run: run,
 		})
 	}
 
@@ -132,7 +135,11 @@ func syncRepo(cfg config.Config, rel, dir string) int {
 	if err := gitcmd.Fetch(dir, remote); err != nil {
 		// Not 0: the notifier must know this machine missed the commit, so it
 		// can queue the notification and try again later.
-		log(activity.StatusError, branch, "fetch from "+remote+" failed: "+gitcmd.Summary(err))
+		st := activity.StatusError
+		if gitcmd.IsOffline(err) {
+			st = activity.StatusOffline
+		}
+		log(st, branch, "fetch from "+remote+" failed: "+gitcmd.Summary(err))
 		return ExitFetchFailed
 	}
 

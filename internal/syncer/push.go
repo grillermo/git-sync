@@ -83,14 +83,16 @@ func pushRepo(cfg config.Config, rel string) map[string]bool {
 	// this repo tries again anyway.
 	if _, err := gitcmd.Push(dir, remote, branch); err != nil {
 		msg := "push to " + remote + " failed: " + gitcmd.Summary(err)
+		st := activity.StatusError
 		if gitcmd.IsOffline(err) {
 			markPending(pendingPush, rel)
 			msg += " (will retry)"
+			st = activity.StatusOffline
 		} else {
 			clearPending(pendingPush, rel)
 		}
 		_ = activity.Append(activity.Event{
-			Repo: rel, Op: activity.OpPush, Status: activity.StatusError,
+			Repo: rel, Op: activity.OpPush, Status: st,
 			Branch: branch, Msg: msg,
 		})
 		return nil
@@ -148,10 +150,10 @@ func notifyPeer(cfg config.Config, p config.Peer, rel, branch string) bool {
 		// happened.
 		ev.Status, ev.Msg = activity.StatusSkip, "peer "+p.Host+" has no copy of this repo, nothing to sync"
 	case code == 255:
-		ev.Status, ev.Msg = activity.StatusError, "peer "+p.Host+" unreachable, will retry"
+		ev.Status, ev.Msg = activity.StatusOffline, "peer "+p.Host+" unreachable, will retry"
 		delivered = false
 	case code == ExitFetchFailed:
-		ev.Status, ev.Msg = activity.StatusError, "peer "+p.Host+" could not fetch, will retry"
+		ev.Status, ev.Msg = activity.StatusOffline, "peer "+p.Host+" could not fetch, will retry"
 		delivered = false
 	default:
 		// A failure on the peer's side that retrying will not fix.

@@ -432,3 +432,48 @@ func TestReceiveQueuesNothingWhenDiverged(t *testing.T) {
 		t.Error("queued an activate though the fast-forward failed")
 	}
 }
+
+func TestReceiveRecordsAnUnreachableRemoteAsOffline(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	// Nothing listens on port 1: git fails with "Connection refused".
+	sb.Git(repo, "remote", "set-url", "origin", "http://127.0.0.1:1/proj.git")
+
+	if code := syncer.Receive("group/proj", "peer.example"); code != syncer.ExitFetchFailed {
+		t.Errorf("Receive = %d, want ExitFetchFailed", code)
+	}
+	testutil.AssertEvent(t, activity.OpReceive, activity.StatusOffline, "fetch")
+	testutil.AssertNoEvent(t, activity.OpReceive, activity.StatusError)
+}
+
+func TestReceiveGroupsItsEventsUnderOneRun(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.PeerClone("group/proj")
+	sb.PeerCommit("group/proj", "from-peer")
+	sb.Dirty(repo) // stash, fast-forward, pop: several events in one receive
+
+	if code := syncer.Receive("group/proj", "peer.example"); code != 0 {
+		t.Fatalf("Receive = %d, want 0", code)
+	}
+	events, err := activity.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := map[string]int{}
+	for _, e := range events {
+		if e.Op == activity.OpReceive {
+			runs[e.Run]++
+		}
+	}
+	if len(runs) != 1 || runs[""] != 0 {
+		t.Fatalf("want every receive event under one non-empty run, got %v", runs)
+	}
+	for _, n := range runs {
+		if n < 3 {
+			t.Errorf("want at least 3 events in the run (stash, fast-forward, restore), got %d", n)
+		}
+	}
+}

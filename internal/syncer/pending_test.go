@@ -54,7 +54,7 @@ func TestAnUnreachablePeerIsNotifiedOnTheNextPushOfAnyRepo(t *testing.T) {
 	sb.StubSSHScripted(map[string]string{"*laptop.local*": "exit 255"}, 0)
 	testutil.Commit(t, sb, a, "made while the laptop was off")
 	syncer.Push("group/a")
-	testutil.AssertEvent(t, activity.OpNotify, activity.StatusError, "will retry")
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOffline, "will retry")
 	if got := pendingEntries(t, sb, "notify", "laptop.local"); len(got) != 1 {
 		t.Fatalf("missed notify not queued: %v", got)
 	}
@@ -103,7 +103,7 @@ func TestAPeerThatCouldNotFetchIsRetried(t *testing.T) {
 
 	testutil.Commit(t, sb, a, "one")
 	syncer.Push("group/a")
-	testutil.AssertEvent(t, activity.OpNotify, activity.StatusError, "could not fetch")
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOffline, "could not fetch")
 	if got := pendingEntries(t, sb, "notify", "laptop.local"); len(got) != 1 {
 		t.Errorf("fetch failure not queued: %v", got)
 	}
@@ -131,7 +131,7 @@ func TestAPushMadeOfflineIsPushedByTheNextRun(t *testing.T) {
 	sb.Git(a, "remote", "set-url", "origin", "http://127.0.0.1:1/a.git")
 	testutil.Commit(t, sb, a, "made offline")
 	syncer.Push("group/a")
-	testutil.AssertEvent(t, activity.OpPush, activity.StatusError, "will retry")
+	testutil.AssertEvent(t, activity.OpPush, activity.StatusOffline, "will retry")
 	if got := pendingEntries(t, sb, "push"); len(got) != 1 {
 		t.Fatalf("offline push not queued: %v", got)
 	}

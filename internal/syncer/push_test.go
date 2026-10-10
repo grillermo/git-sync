@@ -69,7 +69,7 @@ func TestPushRecordsAPeerWithoutTheRepoAsASkip(t *testing.T) {
 	testutil.AssertEvent(t, activity.OpNotify, activity.StatusSkip, "no copy")
 }
 
-func TestPushRecordsAnUnreachablePeerAsAnError(t *testing.T) {
+func TestPushRecordsAnUnreachablePeerAsOffline(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	repo := sb.MakeRepo("group/proj")
 	testutil.SaveConfig(t, sb, "peer.example", "tester")
@@ -77,7 +77,8 @@ func TestPushRecordsAnUnreachablePeerAsAnError(t *testing.T) {
 	testutil.Commit(t, sb, repo, "local change")
 
 	syncer.Push("group/proj")
-	testutil.AssertEvent(t, activity.OpNotify, activity.StatusError, "unreachable")
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOffline, "unreachable")
+	testutil.AssertNoEvent(t, activity.OpNotify, activity.StatusError)
 }
 
 func TestPushDistinguishesAReceiveFailure(t *testing.T) {
@@ -234,7 +235,7 @@ func TestPushKeepsGoingWhenOnePeerIsUnreachable(t *testing.T) {
 		t.Fatalf("Push = %d, want 0", code)
 	}
 	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOK, "up-one.local")
-	testutil.AssertEvent(t, activity.OpNotify, activity.StatusError, "down.local")
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOffline, "down.local")
 }
 
 func TestPushNotifiesPeersConcurrently(t *testing.T) {
@@ -270,4 +271,15 @@ func TestPushRejectsAQuoteInTheRelpath(t *testing.T) {
 	if sb.SSHCalls() != "" {
 		t.Error("must not ssh with an unquotable relpath")
 	}
+}
+
+func TestPushRecordsAPeerThatCouldNotFetchAsOffline(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.StubSSH(syncer.ExitFetchFailed)
+	testutil.Commit(t, sb, repo, "local change")
+
+	syncer.Push("group/proj")
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOffline, "could not fetch")
 }
