@@ -11,6 +11,7 @@ import (
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/gitcmd"
+	"github.com/grillermo/git-sync/internal/running"
 	"github.com/grillermo/git-sync/internal/sshx"
 )
 
@@ -53,6 +54,7 @@ func Push(rel string) int {
 // pushRepo pushes one repo and notifies every peer about it. It returns, per
 // peer host, whether that peer could be reached - nil if no peer was tried.
 func pushRepo(cfg config.Config, rel string) map[string]bool {
+	defer running.Start(rel, activity.OpPush, "")()
 	dir := cfg.RepoPath(rel)
 
 	// Everything below needs a branch to name on the remote, so a detached
@@ -133,6 +135,7 @@ func notifyAll(cfg config.Config, rel, branch string) map[string]bool {
 // is offline, or up but unable to fetch, is queued for retry. It returns
 // whether the peer got the commit or definitively did not need it.
 func notifyPeer(cfg config.Config, p config.Peer, rel, branch string) bool {
+	defer running.Start(rel, activity.OpNotify, p.Host)()
 	self, _ := os.Hostname()
 	remote := fmt.Sprintf("~/.gitsync/bin/git-sync receive '%s' --from '%s'", rel, sanitizeHost(self))
 

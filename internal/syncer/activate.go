@@ -17,6 +17,7 @@ import (
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/gitcmd"
 	"github.com/grillermo/git-sync/internal/lock"
+	"github.com/grillermo/git-sync/internal/running"
 )
 
 // A receive that moves a repo forward only records that the repo needs its
@@ -340,6 +341,7 @@ func acquireCtx(ctx context.Context, rel, from string, timeout time.Duration) (*
 // ActivateLogPath (and also to tee, if given) and the outcome to the
 // activity log. Reports whether it succeeded.
 func runActivate(parent context.Context, dir, rel, oldRev string, tee io.Writer) bool {
+	defer running.Start(rel, activity.OpActivate, "")()
 	script, _ := activateScript(dir)
 	newRev, _ := gitcmd.Run(dir, "rev-parse", "HEAD")
 	logPath := ActivateLogPath(rel)

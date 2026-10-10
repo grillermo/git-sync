@@ -8,6 +8,7 @@ import (
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/gitcmd"
 	"github.com/grillermo/git-sync/internal/lock"
+	"github.com/grillermo/git-sync/internal/running"
 )
 
 // Receive applies whatever the peer just pushed to the local copy of rel.
@@ -82,6 +83,7 @@ func receive(rel, from string) int {
 	// and let a commit through mid-merge.
 	stop := heartbeat(l)
 	defer stop()
+	defer running.Start(rel, activity.OpReceive, from)()
 
 	return syncRepo(cfg, rel, dir)
 }
