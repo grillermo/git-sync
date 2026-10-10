@@ -46,7 +46,10 @@ func decoded() throws -> Snapshot {
     #expect(repos[2].state == "never synced")
     #expect(repos[2].when == nil)
     #expect(pending.count == 1)
-    #expect(pending[0].state == "→ 192.168.1.3")
+    #expect(pending[0].state == "queued")
+    #expect(pending[0].dest == "192.168.1.3")
+    #expect(repos[1].dest == "192.168.1.1")
+    #expect(repos[2].dest == "–")
     #expect(pending[0].path == "/Users/me/c/agents-configs")
     #expect(pending[0].kind == .pending)
 }

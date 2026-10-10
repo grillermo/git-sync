@@ -5,6 +5,7 @@ import GitSyncStatusCore
 private enum Col {
     static let repo: CGFloat = 170
     static let state: CGFloat = 130
+    static let dest: CGFloat = 130
     static let when: CGFloat = 90
     static let rowHeight: CGFloat = 24
 }
@@ -43,7 +44,7 @@ struct StatusTable: View {
             Divider()
             footer
         }
-        .frame(width: 780)
+        .frame(width: 910)
     }
 
     private func height(_ repos: Int, _ pending: Int) -> CGFloat {
@@ -55,6 +56,7 @@ struct StatusTable: View {
         HStack(spacing: 8) {
             Text("Repo").frame(width: Col.repo, alignment: .leading)
             Text("State").frame(width: Col.state, alignment: .leading)
+            Text("Destination").frame(width: Col.dest, alignment: .leading)
             Text("Last sync").frame(width: Col.when, alignment: .leading)
             Text("Detail").frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -110,6 +112,10 @@ private struct RowView: View {
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .frame(width: Col.state, alignment: .leading)
+            Text(row.dest)
+                .foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle)
+                .frame(width: Col.dest, alignment: .leading)
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 Text(ago(row.when, now: context.date)).foregroundStyle(.secondary)
             }

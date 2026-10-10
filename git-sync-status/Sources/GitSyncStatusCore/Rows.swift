@@ -14,6 +14,8 @@ public struct Row: Identifiable, Equatable, Sendable {
     public var name: String
     public var symbol: String
     public var state: String
+    /// The machine(s) this row's work goes to or failed against; "–" if none.
+    public var dest: String
     public var tone: Tone
     public var when: Date?
     public var detail: String
@@ -36,8 +38,11 @@ func repoRow(_ r: Snapshot.Repo) -> Row {
     case .ok: ("✓", "ok", .ok)
     case .never: ("–", "never synced", .muted)
     }
+    let peers = (r.running.map(\.peer) + r.problems.map(\.peer)).compactMap { $0 }.filter { !$0.isEmpty }
+    var seen = Set<String>()
+    let dest = peers.filter { seen.insert($0).inserted }.joined(separator: ", ")
     return Row(
-        id: "repo:" + r.repo, kind: .repo, name: r.repo, symbol: symbol, state: state, tone: tone,
+        id: "repo:" + r.repo, kind: .repo, name: r.repo, symbol: symbol, state: state, dest: dest.isEmpty ? "–" : dest, tone: tone,
         when: r.lastSync, detail: problems.first ?? "", fullDetail: problems.joined(separator: "\n"),
         path: r.path
     )
@@ -49,7 +54,7 @@ func pendingRow(_ p: Snapshot.Pending) -> Row {
     let why = isPush ? "remote unreachable, will retry" : "\(to) offline, will retry"
     return Row(
         id: "pending:\(p.kind):\(p.peer ?? ""):\(p.repo)", kind: .pending, name: p.repo,
-        symbol: "→", state: "→ \(to)", tone: .muted, when: p.since,
+        symbol: "→", state: "queued", dest: to, tone: .muted, when: p.since,
         detail: why, fullDetail: why, path: p.path
     )
 }
