@@ -252,3 +252,12 @@ func TestTotalizeEmptyInput(t *testing.T) {
 		t.Errorf("Totalize(nil) = %+v, want zero", tot)
 	}
 }
+
+func TestSummarizeDoesNotCountOfflineAsAProblem(t *testing.T) {
+	got := report.Summarize([]activity.Event{
+		ev("a/one", activity.OpNotify, activity.StatusOffline, 1),
+	})
+	if got[0].Problems != 0 {
+		t.Errorf("Problems = %d, want 0: an offline peer is queued, not failed", got[0].Problems)
+	}
+}

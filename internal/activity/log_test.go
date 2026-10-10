@@ -139,6 +139,7 @@ func TestEventIsProblem(t *testing.T) {
 	}{
 		{activity.StatusOK, false},
 		{activity.StatusSkip, false},
+		{activity.StatusOffline, false},
 		{activity.StatusWarn, true},
 		{activity.StatusError, true},
 	}
@@ -147,5 +148,23 @@ func TestEventIsProblem(t *testing.T) {
 		if got := e.IsProblem(); got != c.want {
 			t.Errorf("Event{%s}.IsProblem() = %v, want %v", c.status, got, c.want)
 		}
+	}
+}
+
+func TestNewRunIsUniquePerCall(t *testing.T) {
+	a, b := activity.NewRun(), activity.NewRun()
+	if a == "" || a == b {
+		t.Errorf("NewRun() = %q then %q, want two distinct non-empty ids", a, b)
+	}
+}
+
+func TestRunRoundTrips(t *testing.T) {
+	testutil.NewSandbox(t)
+	if err := activity.Append(activity.Event{Repo: "r", Op: activity.OpReceive, Status: activity.StatusOK, Run: "42.7"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := activity.Read()
+	if len(got) != 1 || got[0].Run != "42.7" {
+		t.Errorf("Run did not round-trip: %+v", got)
 	}
 }
