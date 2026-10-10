@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/lock"
+	"github.com/grillermo/git-sync/internal/status"
 	"github.com/grillermo/git-sync/internal/testutil"
 )
 
@@ -145,5 +148,31 @@ func TestServiceMeshNeedsAnInstall(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "git-sync install") {
 		t.Errorf("should point at install: %q", out.String())
+	}
+}
+
+func TestStatusJSONReportsEachSelectedRepo(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	_ = activity.Append(activity.Event{Repo: "group/proj", Op: activity.OpPush, Status: activity.StatusError, Msg: "rejected"})
+
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"status", "--json"}, &out, &errBuf); code != 0 {
+		t.Fatalf("status --json = %d: %s", code, errBuf.String())
+	}
+	var s status.Snapshot
+	if err := json.Unmarshal(out.Bytes(), &s); err != nil {
+		t.Fatalf("not one JSON snapshot: %v\n%s", err, out.String())
+	}
+	if len(s.Repos) != 1 || s.Repos[0].State != status.StateError || s.Problems != 1 {
+		t.Errorf("got %+v", s)
+	}
+}
+
+func TestStatusFollowNeedsJSON(t *testing.T) {
+	var out bytes.Buffer
+	if code := run([]string{"status", "--follow"}, &out, &out); code != 2 {
+		t.Errorf("status --follow without --json = %d, want 2", code)
 	}
 }

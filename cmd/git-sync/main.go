@@ -64,6 +64,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "watch":
 		return cmdWatch(args[1:], stderr)
 
+	case "status":
+		return cmdStatus(args[1:], stdout, stderr)
+
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"github.com/grillermo/git-sync/internal/report"
 	"github.com/grillermo/git-sync/internal/scan"
 	"github.com/grillermo/git-sync/internal/setup"
+	"github.com/grillermo/git-sync/internal/status"
 	"github.com/grillermo/git-sync/internal/syncer"
 )
 
@@ -791,6 +793,58 @@ func cmdReport(args []string, stdout, stderr io.Writer) int {
 
 	if _, err := tea.NewProgram(report.NewModel(summaries), tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(stderr, "report:", err)
+		return 1
+	}
+	return 0
+}
+
+// cmdStatus is the hidden `git-sync status`: this machine's per-repo sync
+// state. --json prints one snapshot as a JSON line; --follow keeps printing
+// one per change until stdin closes or it is signalled - which is how the
+// git-sync-status menu bar app reads it, and why it never outlives the app.
+func cmdStatus(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print a JSON snapshot")
+	follow := fs.Bool("follow", false, "keep printing a snapshot on every change (needs --json)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *follow && !*asJSON {
+		fmt.Fprintln(stderr, "status: --follow needs --json")
+		return 2
+	}
+
+	if !*follow {
+		snap := status.Collect(time.Now())
+		if !*asJSON {
+			status.WriteText(stdout, snap)
+			return 0
+		}
+		b, err := json.Marshal(snap)
+		if err != nil {
+			fmt.Fprintln(stderr, "status:", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, string(b))
+		return 0
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		cancel()
+	}()
+	err := status.Follow(ctx, stdout, status.FollowOptions{
+		Collect:     func() status.Snapshot { return status.Collect(time.Now()) },
+		Fingerprint: func() string { return status.Fingerprint(status.Watched()...) },
+		Tick:        500 * time.Millisecond,
+		Refresh:     time.Minute,
+	})
+	if err != nil {
 		return 1
 	}
 	return 0
