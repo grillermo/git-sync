@@ -170,6 +170,10 @@ Install it with `git-sync-status/build` (needs Xcode's Swift toolchain and
 `/Applications` and starts it. It runs on demand only: it is not a login item
 and `git-sync install` does not set it up.
 
+The app runs the installed `~/.gitsync/bin/git-sync`, so that copy needs the
+`status` command first: run `make build` and re-install (or let `./activate`
+do it) before the app can show anything.
+
 Icon credits: "syncing" by Gregor Cresnar and "git", both from the Noun
 Project, CC BY 3.0.
 
