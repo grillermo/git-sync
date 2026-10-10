@@ -1,10 +1,12 @@
 package syncer_test
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
@@ -205,5 +207,63 @@ func TestRetryDropsARepoNoLongerSelected(t *testing.T) {
 	}
 	if syncer.HasPending() {
 		t.Error("deselected repo left in the queue")
+	}
+}
+
+func TestListAllPendingReturnsPushesAndNotifies(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	a, b := twoRepoMesh(t, sb, "peer.local")
+	sb.StubSSH(255)
+	testutil.Commit(t, sb, b, "notify me")
+	syncer.Push("group/b") // pushed, but the peer is unreachable
+
+	sb.Git(a, "remote", "set-url", "origin", "http://127.0.0.1:1/a.git")
+	testutil.Commit(t, sb, a, "made offline")
+	syncer.Push("group/a") // the push itself is unreachable
+
+	got := map[string]syncer.PendingEntry{}
+	for _, e := range syncer.ListAllPending() {
+		got[e.Kind+" "+e.Host+" "+e.Rel] = e
+	}
+	if _, ok := got["push  group/a"]; !ok {
+		t.Errorf("missing the queued push: %+v", got)
+	}
+	if _, ok := got["notify peer.local group/b"]; !ok {
+		t.Errorf("missing the queued notify: %+v", got)
+	}
+	for k, e := range got {
+		if e.Since.IsZero() {
+			t.Errorf("%s has no Since", k)
+		}
+	}
+}
+
+func TestRequeueingKeepsTheFirstQueuedTime(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	a, _ := twoRepoMesh(t, sb, "peer.local")
+	sb.StubSSH(0)
+	sb.Git(a, "remote", "set-url", "origin", "http://127.0.0.1:1/a.git")
+	testutil.Commit(t, sb, a, "first")
+	syncer.Push("group/a")
+
+	marker := filepath.Join(sb.GitsyncHome, "pending", "push", url.PathEscape("group/a"))
+	old := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(marker, old, old); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Commit(t, sb, a, "second")
+	syncer.Push("group/a") // still offline: queued again
+
+	found := false
+	for _, e := range syncer.ListAllPending() {
+		if e.Rel == "group/a" {
+			found = true
+			if !e.Since.Equal(old) {
+				t.Errorf("Since = %v, want the first queued time %v", e.Since, old)
+			}
+		}
+	}
+	if !found {
+		t.Error("group/a is not in the pending list")
 	}
 }

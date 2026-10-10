@@ -4,8 +4,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/gitcmd"
@@ -47,7 +49,9 @@ func markPending(kind string, rest ...string) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return
 	}
-	if f, err := os.Create(p); err == nil {
+	// No O_TRUNC: re-queueing an existing entry must keep its mtime, which
+	// is when the delivery was first missed (git-sync status shows it).
+	if f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
 		f.Close()
 	}
 }
@@ -156,4 +160,53 @@ func retryPending(cfg config.Config, current string, reached map[string]bool) {
 // selection may have changed since it was recorded.
 func retryable(cfg config.Config, rel string) bool {
 	return cfg.ValidateRel(rel) == nil && cfg.IsSelected(rel) && !strings.Contains(rel, "'")
+}
+
+// PendingEntry is one missed delivery, for git-sync status. Kind is "push"
+// or "notify"; Host is set for notify only. Since is when it was first
+// queued.
+type PendingEntry struct {
+	Kind  string
+	Rel   string
+	Host  string
+	Since time.Time
+}
+
+// ListAllPending returns every queued delivery, oldest first.
+func ListAllPending() []PendingEntry {
+	var out []PendingEntry
+	add := func(kind, host, dir string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			rel, err := url.PathUnescape(e.Name())
+			if err != nil {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			out = append(out, PendingEntry{Kind: kind, Rel: rel, Host: host, Since: info.ModTime()})
+		}
+	}
+	add(pendingPush, "", pendingPath(pendingPush))
+	hosts, _ := os.ReadDir(pendingPath(pendingNotify))
+	for _, h := range hosts {
+		if !h.IsDir() {
+			continue
+		}
+		host, err := url.PathUnescape(h.Name())
+		if err != nil {
+			continue
+		}
+		add(pendingNotify, host, filepath.Join(pendingPath(pendingNotify), h.Name()))
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Since.Before(out[j].Since) })
+	return out
 }
