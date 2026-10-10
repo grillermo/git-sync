@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds ./git-sync-status.app (next to this script), quits the copy that is
 # running, replaces /Applications/git-sync-status.app with it and starts it.
+# Tests run first: a failing build never replaces the running app.
 # macOS only. See docs/superpowers/specs/2026-10-09-git-sync-status-design.md.
 #   ./build
 set -eu
@@ -14,27 +15,17 @@ out=$name.app
 [ "$(uname -s)" = Darwin ] || { echo "$name builds on macOS only" >&2; exit 1; }
 command -v rsvg-convert >/dev/null || { echo "rsvg-convert not found: brew install librsvg" >&2; exit 1; }
 
-# --- icon layers -----------------------------------------------------------
-# The arrows and the git glyph are rendered separately, on the same canvas, so
-# the app can rotate only the arrows. Hiding the other group by CSS keeps the
-# canvas identical; --export-id would crop each layer to its own bounds.
-res=Sources/GitSyncStatus/Resources
-mkdir -p "$res"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-for layer in arrows git; do
-  other=git
-  [ "$layer" = git ] && other=arrows
-  printf '#%s { display: none; }\n' "$other" >"$tmp/$layer.css"
-  for scale in 1 2; do
-    suffix=""
-    [ "$scale" = 2 ] && suffix="@2x"
-    rsvg-convert -s "$tmp/$layer.css" -w $((18 * scale)) -h $((18 * scale)) \
-      -o "$res/$layer$suffix.png" "$icon"
-  done
-done
 
-# --- binary ----------------------------------------------------------------
+# --- icon ------------------------------------------------------------------
+# One glyph, 22pt. The app rotates it whole while syncing and draws the badge
+# itself, so the PNG is just the static mark.
+rsvg-convert -w 22 -h 22 -o "$tmp/icon.png" "$icon"
+rsvg-convert -w 44 -h 44 -o "$tmp/icon@2x.png" "$icon"
+
+# --- test and build --------------------------------------------------------
+swift test
 swift build -c release --product "$name"
 bin=$(swift build -c release --show-bin-path)/$name
 
@@ -42,11 +33,7 @@ bin=$(swift build -c release --show-bin-path)/$name
 rm -rf "$out"
 mkdir -p "$out/Contents/MacOS" "$out/Contents/Resources"
 cp "$bin" "$out/Contents/MacOS/$name"
-# SwiftPM puts resources in a <package>_<target>.bundle next to the binary;
-# Bundle.module finds it in Contents/Resources of an .app.
-for b in "$(dirname "$bin")"/*.bundle; do
-  [ -e "$b" ] && cp -R "$b" "$out/Contents/Resources/"
-done
+cp "$tmp"/*.png "$out/Contents/Resources/"
 cat >"$out/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
