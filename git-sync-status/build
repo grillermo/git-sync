@@ -1,0 +1,82 @@
+#!/bin/sh
+# Builds ./git-sync-status.app (next to this script), quits the copy that is
+# running, replaces /Applications/git-sync-status.app with it and starts it.
+# macOS only. See docs/superpowers/specs/2026-10-09-git-sync-status-design.md.
+#   ./build
+set -eu
+cd "$(dirname "$0")"
+
+name=git-sync-status
+app=/Applications/$name.app
+icon=assets/git-sync-status.svg
+out=$name.app
+
+[ "$(uname -s)" = Darwin ] || { echo "$name builds on macOS only" >&2; exit 1; }
+command -v rsvg-convert >/dev/null || { echo "rsvg-convert not found: brew install librsvg" >&2; exit 1; }
+
+# --- icon layers -----------------------------------------------------------
+# The arrows and the git glyph are rendered separately, on the same canvas, so
+# the app can rotate only the arrows. Hiding the other group by CSS keeps the
+# canvas identical; --export-id would crop each layer to its own bounds.
+res=Sources/GitSyncStatus/Resources
+mkdir -p "$res"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+for layer in arrows git; do
+  other=git
+  [ "$layer" = git ] && other=arrows
+  printf '#%s { display: none; }\n' "$other" >"$tmp/$layer.css"
+  for scale in 1 2; do
+    suffix=""
+    [ "$scale" = 2 ] && suffix="@2x"
+    rsvg-convert -s "$tmp/$layer.css" -w $((18 * scale)) -h $((18 * scale)) \
+      -o "$res/$layer$suffix.png" "$icon"
+  done
+done
+
+# --- binary ----------------------------------------------------------------
+swift build -c release --product "$name"
+bin=$(swift build -c release --show-bin-path)/$name
+
+# --- bundle ----------------------------------------------------------------
+rm -rf "$out"
+mkdir -p "$out/Contents/MacOS" "$out/Contents/Resources"
+cp "$bin" "$out/Contents/MacOS/$name"
+# SwiftPM puts resources in a <package>_<target>.bundle next to the binary;
+# Bundle.module finds it in Contents/Resources of an .app.
+for b in "$(dirname "$bin")"/*.bundle; do
+  [ -e "$b" ] && cp -R "$b" "$out/Contents/Resources/"
+done
+cat >"$out/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>$name</string>
+  <key>CFBundleIdentifier</key><string>com.grillermo.$name</string>
+  <key>CFBundleName</key><string>$name</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$(git rev-parse --short HEAD 2>/dev/null || echo dev)</string>
+  <key>LSMinimumSystemVersion</key><string>15.0</string>
+  <key>LSUIElement</key><true/>
+</dict>
+</plist>
+PLIST
+codesign --force --sign - "$out" >/dev/null 2>&1
+
+# --- replace and relaunch --------------------------------------------------
+# Quit the running copy first: its `git-sync status --follow` child exits on
+# stdin EOF once the app is gone.
+if pgrep -x "$name" >/dev/null; then
+  pkill -x "$name" || true
+  i=0
+  while pgrep -x "$name" >/dev/null; do
+    i=$((i + 1))
+    [ "$i" -le 50 ] || { pkill -9 -x "$name" || true; break; }
+    sleep 0.1
+  done
+fi
+rm -rf "$app"
+ditto "$out" "$app"
+open "$app"
+echo "installed and started $app"
