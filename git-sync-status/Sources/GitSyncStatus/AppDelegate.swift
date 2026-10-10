@@ -14,8 +14,3 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         feed.stop()
     }
 }
-
-// Replaced by StatusItemController.swift in the next task.
-@MainActor final class StatusItemController {
-    init(feed: StatusFeed) {}
-}
