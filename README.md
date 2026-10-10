@@ -268,3 +268,13 @@ records a warning naming it. `git remote add` on every machine is the fix.
 `git-sync uninstall` removes git-sync from every machine in the mesh, keeping
 each one's config and activity history. `git-sync uninstall --purge` also
 removes those. `--local` limits either to just the machine you run it on.
+
+## Licence
+
+git-sync is free software under the [GNU Affero General Public License v3.0](LICENSE).
+Use it, fork it, change it, run it on as many of your own machines as you like.
+If you publish a modified version, or offer it to others over a network, the AGPL
+asks that you publish your changes under the AGPL too.
+
+For anyone who cannot work under those terms, a separate commercial licence is
+available — see [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md).
