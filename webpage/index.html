@@ -1,0 +1,801 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>git-sync — commit on one machine, it is on the others</title>
+<meta name="description" content="git-sync keeps a chosen set of git repos in step across every machine you work on. Commit anywhere and the commit lands on the rest of the mesh seconds later, with nothing to run and nothing to remember.">
+<link rel="icon" href="img/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="5 5 90 90" fill="currentColor">
+  <!-- Sync arrows: "syncing" by Gregor Cresnar, the Noun Project (CC BY 3.0) -->
+  <g id="arrows">
+    <path d="M81,18H62a3,3,0,0,0-3,3V40h6V28A25,25,0,0,1,50,73c-.67,0-1.34,0-2-.09v6c.66,0,1.33.07,2,.07A31,31,0,0,0,69.57,24H81Z"/>
+    <path d="M41,75V56H35V68A25,25,0,0,1,50,23c.67,0,1.34,0,2,.09v-6c-.66,0-1.33-.07-2-.07A31,31,0,0,0,30.43,72H19v6H38A3,3,0,0,0,41,75Z"/>
+  </g>
+  <!-- Git branch glyph: "git" from the Noun Project (CC BY 3.0) -->
+  <g id="git" transform="translate(52 46) scale(1.2) translate(-13 -12.6)" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+    <path d="M19.01,15.96c-1.670,0-3.05,1.38-3.02,3.05-5.13-.27-9.24-4.62-9.46-10.02,3.560-.7,3.12-5.930-.54-5.990-3.71,.07-4.09,5.39-.46,6h-.02v13h1V13.31c1.69,3.87,5.38,6.59,9.67,6.71,1.16,3.12,5.82,2.32,5.85-1.04,0-1.67-1.36-3.020-3.02-3.020ZM3.970,6.020c.07-2.670,3.970-2.660,4.040,0-.07,2.660-3.970,2.660-4.040,0Zm15.04,14.98c-2.67-.07-2.66-3.97,0-4.04,2.66,.07,2.66,3.97,0,4.04Z"/>
+  </g>
+</svg>
+      <span>git-sync</span>
+    </a>
+    <div class="nav-links">
+      <a href="#problem">The problem</a>
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#menubar">Menu bar</a>
+      <a href="#who">Who it's for</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/grillermo/git-sync">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<main id="top">
+
+<!-- ================= hero ================= -->
+<section class="hero">
+  <div class="wrap">
+    <span class="pill"><span class="dot"></span> Open source · One Go binary · macOS + Linux · arm64 + amd64</span>
+    <h1>Commit on one machine.<span class="green">It's already on the others.</span></h1>
+    <p class="lede">git-sync keeps a chosen set of git repos in step across every machine you
+      work on. Commit anywhere in the mesh and the commit is on the rest of it seconds
+      later — no stashing, no pulling, nothing to remember. Your own git remote carries
+      the code; SSH carries one sentence: <em>there is something to pull</em>.</p>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="#install">Install it</a>
+      <a class="btn btn-ghost" href="#how">See how it works</a>
+    </div>
+
+    <div class="hero-term">
+      <div class="term">
+        <div class="term-bar">
+          <span class="lights"><i></i><i></i><i></i></span>
+          <span class="title">mac-mini — zsh</span>
+        </div>
+<pre><span class="prompt">$</span> <span class="cmd">git commit -m "fix the thing"</span>
+[main 9f3c2a1] fix the thing
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+<span class="dim"># nothing else to type. two seconds later, on the laptop:</span>
+
+<span class="prompt">$</span> <span class="cmd">git log --oneline -1</span>
+9f3c2a1 fix the thing
+</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= problem ================= -->
+<section id="problem">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">The problem</div>
+      <h2>Two machines, one brain, and a&nbsp;dance you do twenty times a&nbsp;day</h2>
+      <p class="lede">If you work on a desktop and a laptop — or a Mac and a Linux box, or a
+        machine at home and one at the office — git already solves the hard part. What it
+        does not solve is the clerical part, and the clerical part is the one that bites.</p>
+    </div>
+
+    <div class="grid cols-4">
+      <div class="card">
+        <h3>"Which one has it?"</h3>
+        <p>You sit down at the other machine and the first thing you do is try to remember
+          whether the work you are thinking of lives here or over there.</p>
+      </div>
+      <div class="card">
+        <h3>You forgot to push</h3>
+        <p>The fix is committed. On the machine you are not sitting at. You find out an hour
+          into re-doing it, or worse, after you have made a second, different fix.</p>
+      </div>
+      <div class="card">
+        <h3>Stash, pull, pop, repeat</h3>
+        <p>Switching machines means a dirty tree, a pull that will not fast-forward, and a
+          stash you have to remember to pop. Every single time.</p>
+      </div>
+      <div class="card">
+        <h3>Code arrives, nothing restarts</h3>
+        <p>Even once the commit is there, the service on that machine is still running the
+          old build until you go and rebuild it by hand.</p>
+      </div>
+    </div>
+
+    <div class="grid cols-2" style="margin-top:48px">
+      <div class="card quiet">
+        <h3>What git-sync removes</h3>
+        <p>The step. Not the git. There is no daemon watching your files, no proprietary
+          sync protocol, no copy of your code on someone else's server. A commit is still a
+          commit, pushed to the remote you already use, and the other machines simply
+          fast-forward onto it without being asked.</p>
+      </div>
+      <div class="card quiet">
+        <h3>What it refuses to do</h3>
+        <p>It never commits for you, never pushes on your behalf from a machine you were not
+          sitting at, and never merges anything that is not a fast-forward. Genuinely
+          diverged history is reported and left alone, because that one is yours to think
+          about.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= how it works ================= -->
+<section id="how">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">How it works</div>
+      <h2>The remote is the transport. SSH is just the doorbell.</h2>
+      <p class="lede">Every machine in the mesh already pushes to, and pulls from, the same
+        git remote. git-sync does not invent a new channel for your code — it reuses that
+        one. The only thing that travels machine to machine is a notification.</p>
+    </div>
+
+    <figure class="figure">
+      <svg viewBox="0 0 900 452" role="img" aria-label="Three machines each connected to one shared git remote by a dashed line for code, and to each other by thin lines for notifications.">
+  <defs>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4d4d4d"/>
+    </marker>
+    <style>
+      .ms-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .ms-sans { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+      .ms-lbl  { fill: #fafafa; font-size: 14px; }
+      .ms-sub  { fill: #898989; font-size: 11px; }
+      .ms-tag  { fill: #898989; font-size: 11px; }
+      .ms-box  { fill: #1a1a1a; stroke: #2e2e2e; }
+      .ms-code { stroke: #3ecf8e; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; opacity: .9; }
+      .ms-note { stroke: #4d4d4d; stroke-width: 1.5; fill: none; }
+      .ms-glyph{ stroke: #4d4d4d; stroke-width: 1.5; fill: none; }
+    </style>
+  </defs>
+
+  <!-- shared remote -->
+  <rect class="ms-box" x="330" y="18" width="240" height="72" rx="14"/>
+  <g class="ms-glyph" transform="translate(354 42)">
+    <circle cx="6" cy="6" r="4"/><circle cx="6" cy="22" r="4"/><circle cx="22" cy="14" r="4"/>
+    <path d="M6,10 v8 M9.5,20 L18.5,15.5 M9.5,8 L18.5,12.5"/>
+  </g>
+  <text class="ms-sans ms-lbl" x="394" y="47">shared git remote</text>
+  <text class="ms-mono ms-sub" x="394" y="66">github · origin · your bare repo on a NAS</text>
+
+  <!-- machines -->
+  <g>
+    <rect class="ms-box" x="30" y="282" width="220" height="86" rx="14"/>
+    <g class="ms-glyph" transform="translate(52 306)"><rect x="0" y="0" width="26" height="17" rx="2"/><path d="M-4,21 h34"/></g>
+    <text class="ms-sans ms-lbl" x="92" y="314">mac mini</text>
+    <text class="ms-mono ms-sub" x="92" y="332">~/c</text>
+  </g>
+  <g>
+    <rect class="ms-box" x="340" y="282" width="220" height="86" rx="14"/>
+    <g class="ms-glyph" transform="translate(362 306)"><rect x="0" y="0" width="26" height="17" rx="2"/><path d="M-4,21 h34"/></g>
+    <text class="ms-sans ms-lbl" x="402" y="314">laptop</text>
+    <text class="ms-mono ms-sub" x="402" y="332">~/code</text>
+  </g>
+  <g>
+    <rect class="ms-box" x="650" y="282" width="220" height="86" rx="14"/>
+    <g class="ms-glyph" transform="translate(672 306)"><rect x="0" y="0" width="26" height="17" rx="2"/><path d="M-4,21 h34"/></g>
+    <text class="ms-sans ms-lbl" x="712" y="314">linux box</text>
+    <text class="ms-mono ms-sub" x="712" y="332">~/src</text>
+  </g>
+
+  <!-- code lines: machine <-> remote -->
+  <path class="ms-code" d="M140,282 C140,170 330,150 390,90"/>
+  <path class="ms-code" d="M450,282 L450,90"/>
+  <path class="ms-code" d="M760,282 C760,170 570,150 510,90"/>
+
+  <text class="ms-mono ms-tag" x="196" y="196" text-anchor="middle" transform="rotate(-48 196 196)">push / fetch</text>
+  <text class="ms-mono ms-tag" x="462" y="196">push / fetch</text>
+  <text class="ms-mono ms-tag" x="704" y="196" text-anchor="middle" transform="rotate(48 704 196)">push / fetch</text>
+
+  <!-- notify lines: machine <-> machine -->
+  <path class="ms-note" d="M250,325 L340,325" marker-end="url(#arw)" marker-start="url(#arw)"/>
+  <path class="ms-note" d="M560,325 L650,325" marker-end="url(#arw)" marker-start="url(#arw)"/>
+  <path class="ms-note" d="M140,368 C140,416 760,416 760,368" marker-end="url(#arw)" marker-start="url(#arw)"/>
+
+  <text class="ms-mono ms-tag" x="295" y="316" text-anchor="middle">ssh</text>
+  <text class="ms-mono ms-tag" x="605" y="316" text-anchor="middle">ssh</text>
+  <text class="ms-mono ms-tag" x="450" y="442" text-anchor="middle">ssh — "there is something to pull"</text>
+</svg>
+      <div class="legend">
+        <span><i class="g d"></i> code — push &amp; fetch over the repo's own remote</span>
+        <span><i></i> notify — one SSH command: <code>git-sync receive</code></span>
+      </div>
+      <figcaption>Three machines in a mesh. No repository data ever moves machine to machine.</figcaption>
+    </figure>
+
+    <div class="grid cols-2" style="margin-top:48px;align-items:start">
+      <div class="steps">
+        <div class="step"><span class="n"></span><div>
+          <h4>You commit</h4>
+          <p>A global <code>post-commit</code> hook fires in every repo on the machine, but only
+            acts on the ones you ticked. It does almost nothing itself — git is waiting on it —
+            and re-execs detached so your prompt comes straight back.</p>
+        </div></div>
+        <div class="step"><span class="n"></span><div>
+          <h4>It pushes the branch</h4>
+          <p>To the repo's shared remote, resolved by name the same way on every machine:
+            <code>github</code> if there is one, else <code>origin</code>, else the repo's only
+            remote. Never the branch's upstream, so two machines can never disagree about
+            where they meet.</p>
+        </div></div>
+        <div class="step"><span class="n"></span><div>
+          <h4>It rings every other machine, in parallel</h4>
+          <p>One SSH command per peer, key-only, carrying the repo's relative path and nothing
+            else. A machine that is asleep or off is not an error — the delivery is queued.</p>
+        </div></div>
+        <div class="step"><span class="n"></span><div>
+          <h4>They fetch and fast-forward</h4>
+          <p>Each peer takes a per-repo lock, fetches that same remote, stashes if the tree is
+            dirty, fast-forwards, and unstashes — always, whether or not the fast-forward
+            worked, so a stashed tree is never silently lost.</p>
+        </div></div>
+        <div class="step"><span class="n"></span><div>
+          <h4>And, if you asked, they run <code>./activate</code></h4>
+          <p>Only the machines that <em>received</em> the change run it, one repo at a time,
+            so the thing you just changed is rebuilt and restarted where it runs.</p>
+        </div></div>
+      </div>
+
+      <figure class="figure">
+        <svg viewBox="0 0 500 430" role="img" aria-label="A timeline of what a receiving machine does: it takes a lock, fetches, stashes, fast-forwards, unstashes, releases the lock and queues activate. Commits are refused for the whole locked stretch.">
+  <defs>
+    <style>
+      .fl-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .fl-sans { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+      .fl-step { fill: #fafafa; font-size: 13px; }
+      .fl-note { fill: #898989; font-size: 11px; }
+      .fl-rail { stroke: #2e2e2e; stroke-width: 2; }
+      .fl-node { fill: #121212; stroke: #4d4d4d; stroke-width: 1.5; }
+      .fl-gnode{ fill: #121212; stroke: #3ecf8e; stroke-width: 1.5; }
+      .fl-band { fill: #006239; opacity: .14; }
+      .fl-bedge{ stroke: #1f4b37; stroke-width: 1; fill: none; }
+      .fl-lock { fill: #3ecf8e; font-size: 11px; letter-spacing: .08em; }
+    </style>
+  </defs>
+
+  <!-- the stretch where the repo's lock is held -->
+  <rect class="fl-band" x="26" y="58" width="470" height="256" rx="10"/>
+  <rect class="fl-bedge" x="26.5" y="58.5" width="469" height="255" rx="10"/>
+  <text class="fl-mono fl-lock" transform="rotate(-90 14 186)" x="14" y="186" text-anchor="middle">LOCK HELD — COMMITS REFUSED</text>
+
+  <path class="fl-rail" d="M70,26 V390"/>
+
+  <g>
+    <circle class="fl-node" cx="70" cy="26" r="6"/>
+    <text class="fl-sans fl-step" x="92" y="24">notified by a peer</text>
+    <text class="fl-mono fl-note" x="92" y="40">git-sync receive &lt;repo&gt; --from mac-mini</text>
+  </g>
+  <g>
+    <circle class="fl-gnode" cx="70" cy="82" r="6"/>
+    <text class="fl-sans fl-step" x="92" y="80">take the repo lock</text>
+    <text class="fl-mono fl-note" x="92" y="96">records who is syncing, and since when</text>
+  </g>
+  <g>
+    <circle class="fl-node" cx="70" cy="136" r="6"/>
+    <text class="fl-sans fl-step" x="92" y="134">fetch the shared remote</text>
+    <text class="fl-mono fl-note" x="92" y="150">a long fetch restamps the lock every minute</text>
+  </g>
+  <g>
+    <circle class="fl-node" cx="70" cy="190" r="6"/>
+    <text class="fl-sans fl-step" x="92" y="188">stash, if the tree is dirty</text>
+  </g>
+  <g>
+    <circle class="fl-node" cx="70" cy="228" r="6"/>
+    <text class="fl-sans fl-step" x="92" y="226">merge --ff-only</text>
+    <text class="fl-mono fl-note" x="92" y="242">diverged? reported, never merged for you</text>
+  </g>
+  <g>
+    <circle class="fl-node" cx="70" cy="282" r="6"/>
+    <text class="fl-sans fl-step" x="92" y="280">unstash — always</text>
+    <text class="fl-mono fl-note" x="92" y="296">even if the fast-forward did not apply</text>
+  </g>
+  <g>
+    <circle class="fl-gnode" cx="70" cy="336" r="6"/>
+    <text class="fl-sans fl-step" x="92" y="334">release the lock</text>
+  </g>
+  <g>
+    <circle class="fl-node" cx="70" cy="390" r="6"/>
+    <text class="fl-sans fl-step" x="92" y="388">queue ./activate, if HEAD moved</text>
+    <text class="fl-mono fl-note" x="92" y="404">drained one repo at a time on this machine</text>
+  </g>
+</svg>
+        <figcaption>What happens in the two seconds after <code>git commit</code> returns.</figcaption>
+      </figure>
+    </div>
+
+    <div class="grid cols-3" style="margin-top:48px">
+      <div class="card">
+        <h3>A repo mid-sync refuses commits</h3>
+        <p>While a machine is fast-forwarding a repo, that repo's <code>pre-commit</code> and
+          <code>pre-push</code> hooks refuse — naming the machine that is mid-sync — so a commit
+          can never be made, and broadcast out, from under a merge.</p>
+      </div>
+      <div class="card">
+        <h3>And the lock fails open</h3>
+        <p>A receive that dies — killed process, closed lid — leaves a lock that goes stale on
+          its own after five minutes. <code>git-sync unlock</code> clears one by hand. A wedged
+          lock can never permanently stop a repo from taking commits.</p>
+      </div>
+      <div class="card">
+        <h3>Nothing in the path can prompt you</h3>
+        <p>The hook and its children run detached, with no terminal. That is why SSH is
+          key-only everywhere, with no password fallback: there is no one there to answer.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= install experience ================= -->
+<section id="setup">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Setting it up</div>
+      <h2>Type on one machine. The rest provision themselves.</h2>
+      <p class="lede">You run <code>install</code> once, on any one machine, naming the others.
+        It connects, lets you pick repos, verifies what it found, and then sets up every
+        machine in the mesh over SSH — binary, config, hooks and login service. Nothing is
+        typed on any of the others.</p>
+    </div>
+
+    <div class="term">
+      <div class="term-bar">
+        <span class="lights"><i></i><i></i><i></i></span>
+        <span class="title">git-sync install ~/code --peer you@laptop --peer you@linux-box</span>
+      </div>
+<pre>could not reach 2 of 2 machines:
+  192.168.1.1 -&gt; laptop.local: this machine cannot resolve the name laptop.local
+      use laptop.local&#x27;s IP address, or check that mDNS (.local names) works on this machine
+  192.168.1.1 -&gt; linux-box.local: this machine cannot resolve the name linux-box.local
+      use linux-box.local&#x27;s IP address, or check that mDNS (.local names) works on this machine
+continuing without them; run install again once they are fixed
+
+6 machine pairs cannot ssh to each other:
+  192.168.1.1 -&gt; laptop.local: this machine cannot resolve the name laptop.local
+      use laptop.local&#x27;s IP address, or check that mDNS (.local names) works on this machine
+  192.168.1.1 -&gt; linux-box.local: this machine cannot resolve the name linux-box.local
+      use linux-box.local&#x27;s IP address, or check that mDNS (.local names) works on this machine
+  laptop.local -&gt; linux-box.local: not checked: this machine cannot reach laptop.local itself
+      fix 192.168.1.1 -&gt; laptop.local first, then run install again
+  linux-box.local -&gt; laptop.local: not checked: this machine cannot reach linux-box.local itself
+      fix 192.168.1.1 -&gt; linux-box.local first, then run install again
+  laptop.local -&gt; 192.168.1.1: not checked: this machine cannot reach laptop.local itself
+      fix 192.168.1.1 -&gt; laptop.local first, then run install again
+  linux-box.local -&gt; 192.168.1.1: not checked: this machine cannot reach linux-box.local itself
+      fix 192.168.1.1 -&gt; linux-box.local first, then run install again
+  those directions will not sync until fixed; the rest will.</pre>
+    </div>
+    <p class="term-cap">The <b>connect</b> stage probes every <em>ordered pair</em> of machines in
+      the mesh, not just this one to each peer — a key missing between two peers would otherwise
+      only surface later as a failing notification nobody is watching. Each failure is named for
+      what it actually is (host key never seen, host key changed, key rejected, sshd off, name
+      does not resolve) and comes with the exact command that fixes that pair, on the right
+      machine. On a terminal, install offers to run them for you. The rest of the mesh is set up
+      either way.</p>
+
+    <div class="term" style="margin-top:32px">
+      <div class="term-bar">
+        <span class="lights"><i></i><i></i><i></i></span>
+        <span class="title">the repo picker</span>
+      </div>
+<pre><span style="font-weight:500;color:#fafafa">SELECT REPOS TO SYNC</span>
+<span style="color:#626262">filter: </span>▏<span style="color:#626262">type to filter</span>
+<span style="font-weight:500;color:#fafafa">REPO                              REMOTE</span>
+  [x] api-server                        github   1 commits   last commit 0m ago
+  [ ] blog                              github   1 commits   last commit 0m ago
+  [x] dotfiles                          github   1 commits   last commit 0m ago
+  [x] infra                             github   1 commits   last commit 0m ago
+  [ ] notes                             github   1 commits   last commit 0m ago
+  [ ] photos-tool                       github   1 commits   last commit 0m ago
+<span style="font-weight:500;color:#fafafa;color:#ff87d7">&gt; [x] scripts                           github   1 commits   last commit 0m ago</span>
+  [ ] website                           github   1 commits   last commit 0m ago
+
+[ Save ]  [ Cancel ]
+<span style="color:#626262">[↑↓] move   [enter] toggle   [^a] all   [^x] none   [tab] buttons   [esc] quit</span></pre>
+    </div>
+    <p class="term-cap">The <b>pick</b> stage: sync is opt-in per repo, and each row names the
+      remote that repo would actually sync through — so a repo with no remote, which cannot sync
+      at all, says so before you tick it. Type to filter. Then the <b>verify</b> stage asks every
+      reachable machine which of those repos it really has, and whether its clone points at the
+      same remote, because a one-sided or differently-remoted repo would otherwise never converge
+      and never say why.</p>
+  </div>
+</section>
+
+<!-- ================= features ================= -->
+<section id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Features</div>
+      <h2>Everything it does</h2>
+      <p class="lede">Thirteen subcommands off one binary; six of them are for you and the rest
+        are what the machines say to each other.</p>
+    </div>
+
+    <div class="grid cols-3">
+
+      <div class="card">
+        <h3>Opt-in, per repo</h3>
+        <p>A repo that is not on the allowlist is a silent no-op everywhere — hook, push and
+          receive alike. Syncing is a property of a repo, not of a machine.</p>
+      </div>
+
+      <div class="card">
+        <h3>Any number of machines</h3>
+        <p>Not a pair. A mesh: every machine notifies every other in parallel, and each one
+          gets its own view of the peer list written for it during install.</p>
+      </div>
+
+      <div class="card">
+        <h3>Finds machines on your network</h3>
+        <p>With no peers named, install browses Bonjour for <code>_ssh._tcp</code> and sweeps
+          port 22 across your /24 for about six seconds, and lists what it finds in a checkbox
+          picker as they turn up. Discovery only suggests — every machine you tick still goes
+          through the key-only connect check.</p>
+      </div>
+
+      <div class="card">
+        <h3>Offline machines catch up</h3>
+        <p>A push or notify that failed only because something was unreachable is recorded as
+          <em>offline</em>, not as an error, and queued. Every later push retries the backlog,
+          and being notified at all proves this machine is back online, so it drains then too.</p>
+      </div>
+
+      <div class="card">
+        <h3>Wakes up with your laptop</h3>
+        <p>A LaunchAgent on macOS, a systemd user unit on Linux. It announces at login and
+          again on every wake from sleep — detected by comparing the monotonic clock, which
+          stops while the machine sleeps, against the wall clock, which does not.</p>
+      </div>
+
+      <div class="card">
+        <h3>Catches up from the remote too</h3>
+        <p>On announce, every selected repo is brought forward from the shared remote directly
+          — so a commit whose author machine is now switched off is still picked up.</p>
+      </div>
+
+      <div class="card">
+        <h3><code>./activate</code>: make it live</h3>
+        <p>Drop an executable <code>./activate</code> at a repo's root and git-sync runs it
+          after a sync moves that repo forward — rebuild, restart, whatever "deploy" means
+          there. Only receiving machines run it, never the one that committed.</p>
+      </div>
+
+      <div class="card">
+        <h3>One activate at a time</h3>
+        <p>Runs are queued per repo (three quick commits make one run, with the oldest revision
+          as <code>GITSYNC_OLD_REV</code>) and drained serially per machine. The repo is locked
+          while its script runs, so nothing rewrites the tree under a build.</p>
+      </div>
+
+      <div class="card">
+        <h3>Levels the machines at install</h3>
+        <p>One unpushed commit sitting on any machine would make every later sync warn instead
+          of apply, forever. So install measures each machine against the remote and pushes
+          whichever side is purely ahead, fast-forwarding whichever is purely behind — using
+          nothing but push and <code>merge --ff-only</code>.</p>
+      </div>
+
+      <div class="card">
+        <h3>Clones what a peer is missing</h3>
+        <p>A selected repo that verify finds absent on a peer is cloned there during install,
+          from the same remote URL under the same remote name — never over an existing path,
+          never with a prompt. <code>--no-clone</code> skips it.</p>
+      </div>
+
+      <div class="card">
+        <h3>An activity log you can read</h3>
+        <p>Every push, notify, receive and activate is a line in an append-only JSON log, kept
+          short enough that concurrent writes from separate processes cannot interleave. No
+          lock, no database, greppable.</p>
+      </div>
+
+      <div class="card">
+        <h3><code>git-sync report</code></h3>
+        <p>A terminal browser over that log, grouped by repo, with <code>--since</code>,
+          <code>--repo</code> and <code>--errors</code> filters. Pipe it and you get static,
+          greppable text instead of the TUI.</p>
+      </div>
+
+      <div class="card">
+        <h3>A menu bar app for the Mac</h3>
+        <p>The icon turns while anything is syncing and gets a red dot when a repo has a
+          problem. It reads nothing but <code>git-sync status --json --follow</code>.</p>
+      </div>
+
+      <div class="card">
+        <h3>Key-only SSH, by design</h3>
+        <p><code>BatchMode=yes</code> everywhere, with keepalives so a peer that vanishes
+          mid-receive becomes an exit code in about a minute rather than a hung background
+          push. There is no password path to fall back to, and nothing that could ask.</p>
+      </div>
+
+      <div class="card">
+        <h3>Honest about one-sided repos</h3>
+        <p>A repo that exists on only one machine, or that was cloned from a different remote
+          than the peer's copy, is a warning you can see — never a silent drop, never an
+          automatic clone behind your back, never a retry loop.</p>
+      </div>
+
+      <div class="card">
+        <h3>Mesh-wide uninstall</h3>
+        <p><code>git-sync uninstall</code> SSHes every machine to remove itself, keeping each
+          one's history. <code>--purge</code> takes the config and activity log too;
+          <code>--local</code> limits either to the machine you are sitting at.</p>
+      </div>
+
+      <div class="card">
+        <h3>It behaves like your git</h3>
+        <p>Every git operation shells out to the real <code>git</code> binary, never a library
+          — so your credential helpers, your config, your hooks and your SSH setup all apply
+          exactly as they do when you type it yourself.</p>
+      </div>
+
+      <div class="card">
+        <h3>Nothing leaves your machines</h3>
+        <p>No account, no server, no telemetry. The only third party involved is the git
+          remote you were already pushing to.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ================= report ================= -->
+<section id="report">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Seeing what happened</div>
+      <h2><code>git-sync report</code></h2>
+      <p class="lede">Nothing in the sync path has a terminal to print to, so the activity log
+        is the record. <code>report</code> browses it: repos down the left with their event and
+        problem counts, that repo's timeline on the right.</p>
+    </div>
+
+    <div class="term">
+      <div class="term-bar">
+        <span class="lights"><i></i><i></i><i></i></span>
+        <span class="title">git-sync report --since 72h</span>
+      </div>
+<pre><span style="font-weight:500;color:#fafafa">git-sync  24 repos  480 events  156 problems</span>
+<span style="font-weight:500;color:#fafafa;color:#ff87d7">&gt; currentps              16</span>     <span style="color:#626262"> | 2026-10-09 23:04</span>  notify   <span style="color:#5fd787">ok   </span>  peer 192.168.1.4 synced
+  top_cpu                24<span style="color:#ffaf00"> !14</span>    <span style="color:#626262">2026-10-09 22:36</span>  notify   <span style="color:#626262">offline</span>  peer 192.168.1.4 unreachable,
+  server                 28<span style="color:#ffaf00"> !17</span>    <span style="color:#626262">2026-10-09 22:09</span>  notify   <span style="color:#626262">offline</span>  peer 192.168.1.4 unreachable,
+  ayuyo                  90<span style="color:#ffaf00"> !52</span>    <span style="color:#626262">2026-10-09 22:07</span>  notify   <span style="color:#626262">offline</span>  peer 192.168.1.4 unreachable,
+  zsh                    14        <span style="color:#626262">2026-10-09 22:07</span>  notify   <span style="color:#5fd787">ok   </span>  peer 192.168.1.3 synced
+  claude-swap             4        <span style="color:#626262">2026-10-09 22:04</span>  notify   <span style="color:#626262">offline</span>  peer 192.168.1.3 unreachable,
+  ipad-send              58<span style="color:#ffaf00"> !33</span>    <span style="color:#626262">2026-10-09 22:04</span>  notify   <span style="color:#626262">offline</span>  peer 192.168.1.4 unreachable,
+  rulinky                10<span style="color:#ffaf00"> !1</span>     <span style="color:#626262">2026-10-09 22:04</span>  notify   <span style="color:#5fd787">ok   </span>  peer 192.168.1.2 synced
+  powerline               6        <span style="color:#626262">2026-10-09 22:04</span>  push     <span style="color:#5fd787">ok   </span>  pushed main to github
+  git-sync               49        <span style="color:#626262">2026-10-09 21:57</span>  receive  <span style="color:#5fd787">ok   </span>  fast-forwarded main from github
+  comunidad-antesis       6        <span style="color:#626262">2026-10-09 16:38</span>  receive  <span style="color:#5fd787">ok   </span>  fast-forwarded main from github
+  chicle                  4        <span style="color:#626262">2026-10-09 16:15</span>  receive  <span style="color:#5fd787">ok   </span>  fast-forwarded main from github
+  readitsoon-mcp          4        <span style="color:#626262">2026-10-09 16:14</span>  activate <span style="color:#5fd787">ok   </span>  activated 3852ec4..ff18165 in 1
+  claude-menu             4        <span style="color:#626262">2026-10-09 16:14</span>  receive  <span style="color:#5fd787">ok   </span>  fast-forwarded main from github
+  ntfyllermo              6        <span style="color:#626262">2026-10-09 12:39</span>  activate <span style="color:#5fd787">ok   </span>  activated 73c2e52..3852ec4 in 2
+  readitsoon-companion    4        <span style="color:#626262">2026-10-09 12:39</span>  receive  <span style="color:#5fd787">ok   </span>  fast-forwarded main from github
+  gworktree              11
+  claude-sessions         5
+  agents-configs         69<span style="color:#ffaf00"> !36</span>
+  serve-html-markdown     6
+  readitsoon-obsidi...    4
+  readitsoon              8
+  file_server            15<span style="color:#ffaf00"> !3</span>
+  disk-space-differ      35
+
+
+
+
+
+
+<span style="color:#626262">up/down repo  ·  e problems  ·  q quit</span></pre>
+    </div>
+    <p class="term-cap">Real output from the machine this page is served from. <span style="color:var(--amber)">!n</span>
+      counts problems; <code>offline</code> is a delivery waiting for a machine to come back, not a
+      failure. <kbd>↑</kbd>/<kbd>↓</kbd> moves between repos, <kbd>e</kbd> shows problems only,
+      <kbd>q</kbd> quits.</p>
+  </div>
+</section>
+
+<!-- ================= menu bar ================= -->
+<section id="menubar">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">macOS menu bar app</div>
+      <h2>Is everything in step right now?</h2>
+      <p class="lede">A small accessory app that answers that without you asking. The icon
+        turns while git-sync is working, and carries a red dot whenever any repo has a problem
+        — a rejected push, diverged history, a failed <code>./activate</code>.</p>
+    </div>
+
+    <div class="shot">
+      <img src="img/menubar-panel.png" width="904" height="518"
+           alt="The git-sync menu bar panel: a table of synced repos with state, destination machine, last sync and detail columns.">
+      <p class="cap">Click the icon for one row per synced repo — state, the machine a delivery
+        is bound for, when it last synced, and what happened. Clicking a row copies that repo's
+        path. The app reads one thing and nothing else: <code>git-sync status --json --follow</code>.</p>
+    </div>
+
+    <div class="shot" style="margin-top:16px">
+      <div class="icon-states">
+        <img src="img/icon-states.png" width="1200" height="208"
+             alt="The menu bar icon in six states: idle, three stages of rotation while syncing, with a problem badge, and both at once.">
+      </div>
+      <div class="icon-labels">
+        <span>idle</span><span>syncing 30°</span><span>syncing 60°</span>
+        <span>syncing 90°</span><span>problem</span><span>problem + syncing</span>
+      </div>
+      <p class="cap">One glyph, drawn at 22pt. It rotates once every two seconds while something
+        is in flight, and there is no timer running at all when nothing is.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= who ================= -->
+<section id="who">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Who it's for</div>
+      <h2>The ideal user owns more than one computer and resents it slightly</h2>
+    </div>
+
+    <div class="grid cols-2" style="align-items:start">
+      <div class="card">
+        <h3>This is for you if</h3>
+        <ul class="ticks" style="margin-top:16px">
+          <li><span><b>You work on two or more machines you control.</b> A desktop and a laptop,
+            a Mac and a Linux box, a machine at home and one at the office — and you move
+            between them during a single piece of work.</span></li>
+          <li><span><b>Your repos are already on a remote you push to.</b> GitHub, a self-hosted
+            Forgejo, a bare repo on a NAS. git-sync needs a shared remote; it does not care
+            which.</span></li>
+          <li><span><b>They are all on one network, or at least reachable by SSH.</b> Key-only,
+            every machine to every other.</span></li>
+          <li><span><b>You have a dotfiles, notes or scripts repo</b> you commit to constantly
+            and resent having to push and pull by hand.</span></li>
+          <li><span><b>You run something on one of those machines</b> — a server, a cron job, a
+            menu bar app — and want a commit to rebuild and restart it there.</span></li>
+          <li><span><b>You would rather self-host it</b> than hand a folder of source code to a
+            sync service.</span></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>This is not for you if</h3>
+        <ul class="ticks crosses" style="margin-top:16px">
+          <li><span><b>You want file sync.</b> git-sync moves commits, not working trees.
+            Uncommitted work stays where you made it — that is the point, not a gap.</span></li>
+          <li><span><b>You want a backup.</b> It fast-forwards; it never keeps a copy of
+            anything your remote does not already have.</span></li>
+          <li><span><b>You collaborate with other people on these repos.</b> It is built for one
+            person's several machines. Nothing breaks with teammates, but nothing in it helps
+            with them either.</span></li>
+          <li><span><b>You keep different branches checked out per machine.</b> Then there is
+            usually nothing to fast-forward, which is normal and not an error, but also not
+            much use.</span></li>
+          <li><span><b>Your repos rely on repo-local hooks.</b> git's
+            <code>core.hooksPath</code> is global and exclusive: installing git-sync means
+            Husky or the <code>pre-commit</code> tool no longer runs on its own, and must be
+            invoked from git-sync's shim.</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= install ================= -->
+<section id="install">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Install</div>
+      <h2>Once, on one machine</h2>
+    </div>
+
+    <div class="term">
+      <div class="term-bar">
+        <span class="lights"><i></i><i></i><i></i></span>
+        <span class="title">install</span>
+      </div>
+<pre><span class="dim"># get the source — you need Go 1.26 and nothing else</span>
+<span class="prompt">$</span> <span class="cmd">git clone https://github.com/grillermo/git-sync.git</span>
+<span class="prompt">$</span> <span class="cmd">cd git-sync</span>
+
+<span class="dim"># build the binaries for every platform in the mesh</span>
+<span class="prompt">$</span> <span class="cmd">./build</span>
+
+<span class="dim"># then, from one machine, name the others</span>
+<span class="prompt">$</span> <span class="cmd">bin/git-sync install ~/code \
+      --peer you@laptop.local \
+      --peer you@linux-box.local</span>
+
+<span class="dim"># or name none, and let it scan the network for them</span>
+<span class="prompt">$</span> <span class="cmd">bin/git-sync install ~/code</span>
+</pre>
+    </div>
+
+    <div class="grid cols-3" style="margin-top:32px">
+      <div class="card quiet">
+        <h3>What you need</h3>
+        <p>SSH by key from every machine to every other. The same repos cloned at the same path
+          relative to each machine's base directory, from the same remote. Push access to that
+          remote everywhere. macOS or Linux, arm64 or amd64.</p>
+      </div>
+      <div class="card quiet">
+        <h3>What it writes</h3>
+        <p>A <code>~/.gitsync</code> directory per machine — the binary the hooks invoke, three
+          hook shims, a config file, the activity log — and git's global
+          <code>core.hooksPath</code>, pointed at those shims.</p>
+      </div>
+      <div class="card quiet">
+        <h3>Adding one repo later</h3>
+        <p>Run <code>git-sync install</code> with no base directory from inside the repo. No
+          scan, no repo picker; it keeps the existing install and just adds that one.</p>
+      </div>
+    </div>
+
+    <h3 style="margin:48px 0 16px;font-size:24px">The commands you'll actually type</h3>
+    <table>
+      <tr><th>Command</th><th>What it does</th></tr>
+      <tr><td><code>git-sync install &lt;dir&gt;</code></td><td>Set up the whole mesh from here: connect, pick, verify, install.</td></tr>
+      <tr><td><code>git-sync report</code></td><td>Browse sync activity, grouped by repo. <code>--since</code>, <code>--repo</code>, <code>--errors</code>, <code>--plain</code>.</td></tr>
+      <tr><td><code>git-sync activate [repo]</code></td><td>Run that repo's <code>./activate</code> now, in the foreground, with output on your terminal.</td></tr>
+      <tr><td><code>git-sync unlock [repo]</code></td><td>Clear a sync lock by hand, if a receive died and you would rather not wait out the stale timeout.</td></tr>
+      <tr><td><code>git-sync service install</code></td><td>Install or replace the login service on every machine in the mesh (<code>--local</code> for just this one).</td></tr>
+      <tr><td><code>git-sync uninstall</code></td><td>Remove git-sync from every machine. <code>--purge</code> takes config and history too; <code>--local</code> stays here.</td></tr>
+    </table>
+
+    <p class="term-cap" style="margin-top:24px">Seven more subcommands exist and are hidden from
+      <code>-h</code> on purpose: they are what the machines invoke on each other.</p>
+
+    <h3 style="margin:48px 0 16px;font-size:24px">Fork it</h3>
+    <p class="lede" style="font-size:16px;margin-bottom:24px">It's open source, under the
+      <a href="https://github.com/grillermo/git-sync/blob/main/LICENSE">GNU AGPL&nbsp;v3.0</a>.
+      Use it, change it, run your own mesh on your own fork — none of that needs asking.</p>
+
+    <div class="term">
+      <div class="term-bar">
+        <span class="lights"><i></i><i></i><i></i></span>
+        <span class="title">fork, change, check</span>
+      </div>
+<pre><span class="dim"># fork on github.com/grillermo/git-sync, then</span>
+<span class="prompt">$</span> <span class="cmd">git clone git@github.com:&lt;you&gt;/git-sync.git &amp;&amp; cd git-sync</span>
+
+<span class="dim"># everything runs through plain go test — no external runner</span>
+<span class="prompt">$</span> <span class="cmd">make check</span>          <span class="dim"># go vet + gofmt + go test ./...</span>
+<span class="prompt">$</span> <span class="cmd">go test -race ./...</span>  <span class="dim"># the concurrent paths</span>
+
+<span class="dim"># then build and install your own copy over the mesh</span>
+<span class="prompt">$</span> <span class="cmd">./build &amp;&amp; bin/git-sync install ~/code --peer you@other-machine</span>
+</pre>
+    </div>
+    <p class="term-cap">Every test that touches the filesystem or git goes through a sandbox that
+      points <code>HOME</code>, <code>GITSYNC_HOME</code> and git's global config at a temp tree, so
+      running the suite can never reach your real <code>~/.gitsync</code>. Pull requests welcome;
+      issues too.</p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>git-sync — a single Go binary that keeps your machines in step.
+      <a href="https://github.com/grillermo/git-sync">Source on GitHub</a>.</span>
+    <span>Free software under the
+      <a href="https://github.com/grillermo/git-sync/blob/main/LICENSE">AGPL&nbsp;v3.0</a>;
+      a <a href="https://github.com/grillermo/git-sync/blob/main/LICENSE-COMMERCIAL.md">commercial
+      licence</a> is available for anyone who cannot live with the copyleft.</span>
+    <span>Menu bar icon: "syncing" by Gregor Cresnar and "git", both from the Noun Project, CC&nbsp;BY&nbsp;3.0.</span>
+    <span>This page loads no external resources.</span>
+  </div>
+</footer>
+
+</body>
+</html>
