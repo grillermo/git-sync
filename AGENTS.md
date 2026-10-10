@@ -46,6 +46,12 @@ make install BASE_DIR=~/code   # build then run: ./git-sync install $(BASE_DIR)
 After successfully adding a new feature (checks green), always rebuild the
 binary with `make build` so the checked-in `./git-sync` reflects it.
 
+After every successful change to the menu bar app (`git-sync-status/`) — or to
+`git-sync status`, which it reads — run `git-sync-status/build`. It
+rebuilds `git-sync-status.app`, quits the running copy, replaces
+`/Applications/git-sync-status.app` and starts the new one, so what is in the
+menu bar is always the latest build. macOS only.
+
 Single test / package:
 
 ```bash
@@ -389,8 +395,6 @@ external test runner — plain `go test`.
 
 Lives in `git-sync-status/` (SwiftPM, macOS only). It reads nothing but
 `git-sync status --json --follow` and never parses `~/.gitsync` itself.
-`swift test --package-path git-sync-status` runs its tests. After every
-successful change to it, or to `git-sync status`, run `git-sync-status/build`:
-it tests, rebuilds the `.app`, quits the running copy, replaces
-`/Applications/git-sync-status.app` and starts the new one. `make build` and
-`make check` never touch it.
+`swift test --package-path git-sync-status` runs its tests. The rule for
+rebuilding and installing it (`git-sync-status/build`) is under Commands;
+`make build` and `make check` never touch it.
