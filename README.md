@@ -156,6 +156,23 @@ warning naming this when it re-provisions an already-configured peer.
   machine in the mesh (`--local` limits it to this machine only; `--purge`
   also deletes config and activity history on whichever machines it touches).
 
+## Menu bar app (macOS)
+
+`git-sync-status/` holds a small menu bar app that shows this Mac's syncing at
+a glance. The icon turns while git-sync is working and gets a red dot when any
+repo has a problem (a rejected push, diverged history, a failed `./activate`).
+Click it for a table with one row per synced repo (state, last sync, detail)
+and the deliveries still queued for machines that are off. Clicking a row
+copies the repo's path. It reads only `git-sync status --json --follow`.
+
+Install it with `git-sync-status/build` (needs Xcode's Swift toolchain and
+`brew install librsvg`). It tests, builds, copies the app into
+`/Applications` and starts it. It runs on demand only: it is not a login item
+and `git-sync install` does not set it up.
+
+Icon credits: "syncing" by Gregor Cresnar and "git", both from the Noun
+Project, CC BY 3.0.
+
 ## Making synced code live: `./activate`
 
 When a sync moves a repo forward on a machine and that repo has an

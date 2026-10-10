@@ -1,6 +1,6 @@
 # git-sync-status — a menu bar view of this Mac's syncing
 
-Status: design, not implemented.
+Status: implemented.
 
 ## Problem
 
@@ -84,7 +84,9 @@ The popover holds one table:
   text is in the row's tooltip when it is truncated.
 - **Pending** rows are listed below the repos under their own header: one row
   per queued push (`→ remote`) and per queued notify (`→ <peer>`), with the
-  time the entry was queued (the marker file's mtime). The section is hidden
+  time the entry was first queued (the marker file's mtime; `markPending`
+  no longer truncates an existing marker, so a retry that fails again keeps
+  the original time). The section is hidden
   when the queue is empty.
 - **Clicking a row copies the repo's absolute path** (`base_dir/<rel>`) to
   the clipboard, for a repo row or a pending row alike. A brief "Copied"
@@ -96,10 +98,17 @@ The popover holds one table:
 
 The log is read as a set of independent channels per repo, keyed by
 `(op, peer)`: `push`, `notify → 192.168.1.1`, `notify → 192.168.1.4`,
-`receive`, `activate`. For each channel only the **latest** event counts.
+`receive`, `activate`. For each channel only the **latest run** counts.
 
-- A repo **has a problem** if the latest event on any of its channels is
-  `warn` or `error`. It clears when that same channel next succeeds. A later
+A run is one operation's worth of events. A single receive writes several
+events (for example `ok` "stashed", `warn` "diverged", `ok` "restored
+stashed changes"), so "latest event" would let the trailing `ok` hide the
+`warn`. `activity.Event` therefore has a `Run` id, and `syncRepo` stamps every
+event of one receive with the same one. Events with no `Run` (every other op,
+and old log lines) are each their own run.
+
+- A repo **has a problem** if the latest run on any of its channels contains a
+  `warn` or `error` event. It clears when that same channel next succeeds. A later
   commit that pushes fine clears a rejected push, and the next successful
   `./activate` clears a failed one. There is no time window: a problem stays
   until something fixes it.
@@ -120,7 +129,10 @@ StatusOffline Status = "offline" // a machine was out of reach; queued in pendin
 
 It is used for exactly the cases that already call `markPending`: a push
 that `gitcmd.IsOffline` reads as unreachable, a notify where ssh exits 255,
-and a notify where the peer exits `ExitFetchFailed`. `IsProblem()` stays
+and a notify where the peer exits `ExitFetchFailed`. Two more cases are
+offline too: the receiver's own fetch failure when `gitcmd.IsOffline` says so
+(otherwise it stays `error`), and `announce`'s "could not reach the remote at
+startup". `IsProblem()` stays
 `warn || error`, so `report` stops counting these as problems too. `report`
 shows offline events with their own dim marker rather than hiding them.
 
@@ -209,18 +221,24 @@ only link to the Go code is the `git-sync status` command it runs.
 ```
 git-sync-status/
   build                         builds, installs into /Applications, relaunches
-  Package.swift                 executable target, macOS 15+, Swift 6
+  Package.swift                 two targets (Core library, executable), macOS 15+, Swift 5 language mode
   assets/
     git-sync-status.svg         the merged icon
     icon-states-preview.png     every icon state, light and dark
     noun_syncing_3560918.svg    source icons, kept for attribution
     noun_git_4941290.svg
-  Sources/GitSyncStatus/
-    main.swift                  NSApplication, .accessory policy
-    StatusItemController.swift  NSStatusItem, icon frames, popover toggle, Esc
-    StatusFeed.swift            runs the git-sync process, decodes snapshots, restarts it
+  Sources/GitSyncStatusCore/    library, no AppKit, unit-tested
     Snapshot.swift              Codable mirror of the JSON above
-    StatusTable.swift           SwiftUI Table inside the popover
+    Rows.swift                  row mapping, relative times, IconState
+  Sources/GitSyncStatus/        the AppKit/SwiftUI executable
+    main.swift                  NSApplication, .accessory policy
+    AppDelegate.swift           wires the feed to the status item
+    StatusFeed.swift            runs the git-sync process, decodes snapshots, restarts it
+    IconRenderer.swift          rotates the glyph, draws the red badge
+    StatusItemController.swift  NSStatusItem, icon frames, popover toggle, Esc
+    StatusTable.swift           hand-laid SwiftUI grid (LazyVStack of fixed-width
+                                columns, not SwiftUI Table) inside the popover
+  Tests/GitSyncStatusCoreTests/ swift-testing tests for the Core library
   git-sync-status.app           build output (gitignored), copied to /Applications
 ```
 
@@ -229,8 +247,10 @@ git-sync-status/
   exits (for example `./activate` replaced the binary), the app starts it
   again after 2 s and shows "reconnecting" in the footer meanwhile.
 - `git-sync-status/build` is the app's own build script, separate
-  from the repo's `./build` and from `make`. It renders the icon,
-  runs `swift build -c release`, assembles `git-sync-status/git-sync-status.app` with an `Info.plist`
+  from the repo's `./build` and from `make`. It renders the icon
+  (22pt PNG plus @2x into `Contents/Resources`, loaded with `Bundle.main`;
+  there are no SwiftPM resources), runs `swift test` (a failing test never
+  replaces the running app), then `swift build -c release`, assembles `git-sync-status/git-sync-status.app` with an `Info.plist`
   setting `LSUIElement`, quits the running copy, replaces
   `/Applications/git-sync-status.app` and starts it. It runs after every
   successful change to the app or to `git-sync status` (see AGENTS.md).

@@ -100,15 +100,16 @@ special-casing, for any number of machines in the mesh.
 
 ## Architecture
 
-Twelve subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
+Thirteen subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
 actual command bodies live in `cmd/git-sync/stubs.go` — despite the
 filename, that file is not stub code, it's the real implementation of every
 `cmdX` function). Six are for humans (`install`, `uninstall`, `report`,
 `unlock` — clears a stuck receiver lock by hand, `service` — installs or
 removes the login service mesh-wide, or with `--local` just here, `activate
-[<repo>]` — runs a repo's `./activate` now); six are
+[<repo>]` — runs a repo's `./activate` now); seven are
 invoked by machines and deliberately hidden from `-h` output (`hook`, `push`,
-`receive`, `retry`, `announce`, `watch`; `activate --drain` is the hidden
+`receive`, `retry`, `announce`, `watch`, `status` — the JSON feed the
+menu bar app reads; `activate --drain` is the hidden
 machine form of `activate`). Key-only ssh auth means nothing else needs to shell out to
 git-sync itself, so there is no `askpass`/`savepass` anymore.
 
@@ -143,6 +144,10 @@ Package layering, leaves to composition:
   A receive that outlives `StaleAfter` (a large fetch) restamps its own lock
   every minute via `Refresh` so it never goes stale out from under itself —
   see `heartbeat` in `receive.go`.
+- **`internal/running`** — one marker file per in-flight push/notify/receive/
+  activate (`~/.gitsync/running/<pid>-<op>-<rel>`), so `status` can say
+  "syncing". Created and removed atomically, no lock; `List` drops (and
+  deletes) markers whose pid is dead.
 - **`internal/syncer`** — the machine-invoked operations, composed from the
   above:
   - `hook.go`: `Hook` runs on every `post-commit` in every repo on the
@@ -168,8 +173,10 @@ Package layering, leaves to composition:
     atomic create/remove, so no lock). Every later `push` of *any* repo
     retries the backlog afterwards (skipping a peer it just found down), and
     `receive` spawns a detached `retry` when the backlog is non-empty, since
-    being notified proves this machine is back online. Entries for repos no
-    longer selected are dropped. `sshx` adds `ServerAliveInterval`/`CountMax`
+    being notified proves this machine is back online. Such a delivery is
+    logged with status `offline` (not `error`), and `ListAllPending` lists the
+    whole backlog for `status`. Entries for repos no longer selected are
+    dropped. `sshx` adds `ServerAliveInterval`/`CountMax`
     so a peer that vanishes mid-receive turns into exit 255 after ~1 minute
     instead of hanging the background push.
   - `watch.go`: the long-running process the login service runs. Announces
@@ -318,6 +325,13 @@ Package layering, leaves to composition:
 - **`internal/report`** — `aggregate.go` is pure functions over a slice of
   `activity.Event` (no I/O, no terminal — trivially testable), `plain.go` is
   static output for piped/non-tty use, `tui.go` is the bubbletea browser.
+- **`internal/status`** — what the menu bar app reads. `Build` is pure: it
+  folds events, running markers, pending entries and config into per-repo
+  state over channels keyed `(repo, op, peer)`; only a channel's latest run
+  (events share an `activity.Event.Run` id) counts, and `offline` events
+  never set or clear a problem. `Follow` polls a fingerprint of the log,
+  `pending/` and `running/` every 500 ms and emits a snapshot line when it
+  changes, or every minute regardless.
 
 `cmd/git-sync/pending.go` saves the picker's repo selection in the temp
 dir until a run pairs every machine, so repeated installs while fixing ssh
@@ -328,7 +342,7 @@ Runtime layout under `~/.gitsync/` (or `$GITSYNC_HOME`): `bin/git-sync` (the
 copy the hooks and ssh invoke — re-copying on install can't race a commit
 mid-execution), `hooks/{post-commit,pre-commit,pre-push}` (shell shims, not
 the binary itself, for the same non-racing reason — each just execs `git-sync
-hook <name>`), `config.toml`, `activity.jsonl`, `debug.log`, `locks/`, `pending/`, `activate/` (`queue/` plus per-repo `*.log`). No
+hook <name>`), `config.toml`, `activity.jsonl`, `debug.log`, `locks/`, `pending/`, `running/`, `activate/` (`queue/` plus per-repo `*.log`). No
 `askpass`: ssh is key-only now, so there is nothing for one to feed.
 
 ## Key invariants worth preserving
@@ -370,3 +384,13 @@ different signature; published docs mix the two freely, so don't "correct"
 existing code to a signature seen elsewhere without checking which major
 version it's from. `BurntSushi/toml v1.6.0`, `golang.org/x/term`. No
 external test runner — plain `go test`.
+
+## git-sync-status (macOS menu bar app)
+
+Lives in `git-sync-status/` (SwiftPM, macOS only). It reads nothing but
+`git-sync status --json --follow` and never parses `~/.gitsync` itself.
+`swift test --package-path git-sync-status` runs its tests. After every
+successful change to it, or to `git-sync status`, run `git-sync-status/build`:
+it tests, rebuilds the `.app`, quits the running copy, replaces
+`/Applications/git-sync-status.app` and starts the new one. `make build` and
+`make check` never touch it.
