@@ -5,12 +5,12 @@ import GitSyncStatusCore
 private enum Col {
     static let repo: CGFloat = 170
     static let state: CGFloat = 130
-    static let dest: CGFloat = 130
     static let when: CGFloat = 90
     static let rowHeight: CGFloat = 24
 }
 
-/// The window: one row per synced repo, then the pending queue, then a
+/// The window: one row per synced repo (or per machine it has problems with),
+/// then the pending queue, then a
 /// footer. Clicking a row copies its repo's absolute path.
 struct StatusTable: View {
     let feed: StatusFeed
@@ -56,7 +56,6 @@ struct StatusTable: View {
         HStack(spacing: 8) {
             Text("Repo").frame(width: Col.repo, alignment: .leading)
             Text("State").frame(width: Col.state, alignment: .leading)
-            Text("Destination").frame(width: Col.dest, alignment: .leading)
             Text("Last sync").frame(width: Col.when, alignment: .leading)
             Text("Detail").frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -112,10 +111,6 @@ private struct RowView: View {
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .frame(width: Col.state, alignment: .leading)
-            Text(row.dest)
-                .foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.middle)
-                .frame(width: Col.dest, alignment: .leading)
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 Text(ago(row.when, now: context.date)).foregroundStyle(.secondary)
             }

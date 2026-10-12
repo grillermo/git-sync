@@ -14,8 +14,6 @@ public struct Row: Identifiable, Equatable, Sendable {
     public var name: String
     public var symbol: String
     public var state: String
-    /// The machine(s) this row's work goes to or failed against; "–" if none.
-    public var dest: String
     public var tone: Tone
     public var when: Date?
     public var detail: String
@@ -26,11 +24,48 @@ public struct Row: Identifiable, Equatable, Sendable {
 /// The table's rows, in the order git-sync sent them (it already sorts
 /// syncing, then problems, then most recent).
 public func rows(for s: Snapshot) -> (repos: [Row], pending: [Row]) {
-    (s.repos.map(repoRow), s.pending.map(pendingRow))
+    (s.repos.flatMap(repoRows), s.pending.map(pendingRow))
+}
+
+/// A repo with problems gets one row per machine they happened on, so an error
+/// with one peer is not hidden behind another. Anything else - syncing, ok,
+/// never - stays one row.
+func repoRows(_ r: Snapshot.Repo) -> [Row] {
+    guard r.state == .error || r.state == .warn, !r.problems.isEmpty else { return [repoRow(r)] }
+    var order: [String] = []
+    var byMachine: [String: [Snapshot.Problem]] = [:]
+    for p in r.problems {
+        let m = machine(p)
+        if byMachine[m] == nil { order.append(m) }
+        byMachine[m, default: []].append(p)
+    }
+    return order.map { m in
+        let ps = byMachine[m]!
+        let isError = ps.contains { $0.status == "error" }
+        let lines = ps.map(line)
+        return Row(
+            id: "repo:\(r.repo):\(m)", kind: .repo, name: r.repo,
+            symbol: isError ? "✗" : "⚠", state: isError ? "error" : "warn",
+            tone: isError ? .error : .warn, when: r.lastSync,
+            detail: lines.first ?? "", fullDetail: lines.joined(separator: "\n"), path: r.path
+        )
+    }
+}
+
+/// Where a problem happened: the peer it was sent to, the remote for a push,
+/// or this machine for its own receives and ./activate runs.
+func machine(_ p: Snapshot.Problem) -> String {
+    if let peer = p.peer, !peer.isEmpty { return peer }
+    return p.op == "push" ? "remote" : "this Mac"
+}
+
+/// "[192.168.1.4] notify: peer 192.168.1.4 receive failed (exit 1)"
+func line(_ p: Snapshot.Problem) -> String {
+    "[\(machine(p))] \(p.op): \(p.msg)"
 }
 
 func repoRow(_ r: Snapshot.Repo) -> Row {
-    let problems = r.problems.map { "\(label($0.op, $0.peer)): \($0.msg)" }
+    let problems = r.problems.map(line)
     let (symbol, state, tone): (String, String, Tone) = switch r.state {
     case .syncing: ("↻", "syncing (\(r.running.first?.op ?? "…"))", .syncing)
     case .error: ("✗", "error", .error)
@@ -38,11 +73,8 @@ func repoRow(_ r: Snapshot.Repo) -> Row {
     case .ok: ("✓", "ok", .ok)
     case .never: ("–", "never synced", .muted)
     }
-    let peers = (r.running.map(\.peer) + r.problems.map(\.peer)).compactMap { $0 }.filter { !$0.isEmpty }
-    var seen = Set<String>()
-    let dest = peers.filter { seen.insert($0).inserted }.joined(separator: ", ")
     return Row(
-        id: "repo:" + r.repo, kind: .repo, name: r.repo, symbol: symbol, state: state, dest: dest.isEmpty ? "–" : dest, tone: tone,
+        id: "repo:" + r.repo, kind: .repo, name: r.repo, symbol: symbol, state: state, tone: tone,
         when: r.lastSync, detail: problems.first ?? "", fullDetail: problems.joined(separator: "\n"),
         path: r.path
     )
@@ -50,18 +82,12 @@ func repoRow(_ r: Snapshot.Repo) -> Row {
 
 func pendingRow(_ p: Snapshot.Pending) -> Row {
     let isPush = p.kind == "push"
-    let to = isPush ? "remote" : (p.peer ?? "?")
-    let why = isPush ? "remote unreachable, will retry" : "\(to) offline, will retry"
+    let why = isPush ? "remote unreachable, will retry" : "\(p.peer ?? "?") offline, will retry"
     return Row(
         id: "pending:\(p.kind):\(p.peer ?? ""):\(p.repo)", kind: .pending, name: p.repo,
-        symbol: "→", state: "queued", dest: to, tone: .muted, when: p.since,
+        symbol: "→", state: "queued", tone: .muted, when: p.since,
         detail: why, fullDetail: why, path: p.path
     )
-}
-
-func label(_ op: String, _ peer: String?) -> String {
-    guard let peer, !peer.isEmpty else { return op }
-    return "\(op) → \(peer)"
 }
 
 /// "now", "2 min. ago", "1 hr. ago"; "–" for never.

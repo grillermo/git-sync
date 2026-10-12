@@ -42,16 +42,36 @@ func decoded() throws -> Snapshot {
     #expect(repos[0].state == "syncing (push)")
     #expect(repos[0].tone == .syncing)
     #expect(repos[1].tone == .error)
-    #expect(repos[1].detail == "notify → 192.168.1.1: peer 192.168.1.1 receive failed (exit 1)")
+    #expect(repos[1].detail == "[192.168.1.1] notify: peer 192.168.1.1 receive failed (exit 1)")
     #expect(repos[2].state == "never synced")
     #expect(repos[2].when == nil)
     #expect(pending.count == 1)
     #expect(pending[0].state == "queued")
-    #expect(pending[0].dest == "192.168.1.3")
-    #expect(repos[1].dest == "192.168.1.1")
-    #expect(repos[2].dest == "–")
+    #expect(pending[0].detail == "192.168.1.3 offline, will retry")
     #expect(pending[0].path == "/Users/me/c/agents-configs")
     #expect(pending[0].kind == .pending)
+}
+
+@Test func aRepoGetsOneRowPerMachineWithProblems() throws {
+    let line = """
+    {"at":"2026-10-09T17:20:00-06:00","syncing":false,"problems":1,"repos":[
+     {"repo":"currentps","path":"/Users/me/c/currentps","state":"error","last_sync":"2026-10-09T16:10:00-06:00","running":[],"problems":[
+      {"ts":"2026-10-09T16:30:00-06:00","op":"receive","status":"error","msg":"stash failed, not touching this repo"},
+      {"ts":"2026-10-09T16:25:00-06:00","op":"notify","peer":"192.168.1.4","status":"warn","msg":"peer 192.168.1.4 diverged"},
+      {"ts":"2026-10-09T16:20:00-06:00","op":"activate","status":"warn","msg":"./activate exited 1"},
+      {"ts":"2026-10-09T16:15:00-06:00","op":"push","status":"error","msg":"push to github failed"}]}
+    ],"pending":[]}
+    """.replacingOccurrences(of: "\n", with: "")
+    let (repos, _) = rows(for: try Snapshot.decode(Data(line.utf8)))
+    #expect(repos.map(\.detail) == [
+        "[this Mac] receive: stash failed, not touching this repo",
+        "[192.168.1.4] notify: peer 192.168.1.4 diverged",
+        "[remote] push: push to github failed",
+    ])
+    #expect(repos.map(\.name) == ["currentps", "currentps", "currentps"])
+    #expect(repos.map(\.tone) == [.error, .warn, .error])
+    #expect(repos[0].fullDetail == "[this Mac] receive: stash failed, not touching this repo\n[this Mac] activate: ./activate exited 1")
+    #expect(Set(repos.map(\.id)).count == 3)
 }
 
 @Test func everyRowCopiesItsRepoPath() throws {
