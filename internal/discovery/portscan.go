@@ -35,14 +35,52 @@ func LocalIP() (ip string, ok bool) {
 	return net.IP(b[:]).String(), true
 }
 
-// localSubnet picks the interface to sweep: an up, non-loopback IPv4, keeping
-// the first en* (the built-in Ethernet/Wi-Fi on macOS, and the systemd
-// predictable name on Linux) and otherwise whichever came last.
+// ifaceAddr is one IPv4 address on an up, non-loopback interface.
+type ifaceAddr struct {
+	name       string
+	addr, mask uint32
+}
+
+// localSubnet picks the interface to sweep from this machine's real ones.
 func localSubnet() (addr, mask uint32, ok bool) {
+	return pickSubnet(interfaceAddrs())
+}
+
+// pickSubnet keeps the first en* (the built-in Ethernet/Wi-Fi on macOS, and
+// the systemd predictable name on Linux) and otherwise whichever came last.
+// A link-local 169.254/16 address only counts when there is nothing else: it
+// is what macOS self-assigns an interface that got no DHCP lease (Wi-Fi on
+// while the LAN is wired, say), so an en0 holding one would otherwise beat
+// the en5 actually on the network, and peers would be told to ssh back to an
+// address they cannot reach.
+func pickSubnet(cands []ifaceAddr) (addr, mask uint32, ok bool) {
+	var fallback *ifaceAddr
+	for i, c := range cands {
+		if c.addr&0xFFFF0000 == 0xA9FE0000 {
+			if fallback == nil {
+				fallback = &cands[i]
+			}
+			continue
+		}
+		addr, mask, ok = c.addr, c.mask, true
+		if strings.HasPrefix(c.name, "en") {
+			return addr, mask, ok
+		}
+	}
+	if !ok && fallback != nil {
+		return fallback.addr, fallback.mask, true
+	}
+	return addr, mask, ok
+}
+
+// interfaceAddrs lists every IPv4 address on an up, non-loopback interface,
+// in the order the system reports them.
+func interfaceAddrs() []ifaceAddr {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return 0, 0, false
+		return nil
 	}
+	var out []ifaceAddr
 	for _, ifc := range ifaces {
 		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
 			continue
@@ -64,13 +102,10 @@ func localSubnet() (addr, mask uint32, ok bool) {
 			if a32 == 0 || m32 == 0 {
 				continue
 			}
-			addr, mask, ok = a32, m32, true
-			if strings.HasPrefix(ifc.Name, "en") {
-				return addr, mask, ok
-			}
+			out = append(out, ifaceAddr{name: ifc.Name, addr: a32, mask: m32})
 		}
 	}
-	return addr, mask, ok
+	return out
 }
 
 // enumerateHosts lists the addresses to probe around address. Anything

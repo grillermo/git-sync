@@ -107,3 +107,57 @@ func TestSweepStopsWhenCancelled(t *testing.T) {
 		t.Error("a cancelled sweep must not report anything")
 	}
 }
+
+// ip4 packs a dotted IPv4 string for pickSubnet's candidates.
+func ip4(s string) uint32 {
+	b := net.ParseIP(s).To4()
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+}
+
+const slash24, slash16 = 0xFFFFFF00, 0xFFFF0000
+
+func TestPickSubnetSkipsALinkLocalEn0ForTheInterfaceOnTheLAN(t *testing.T) {
+	// Wi-Fi on without a lease while the LAN is wired: macOS self-assigns en0
+	// a 169.254 address, and en5 has the real one.
+	addr, mask, ok := pickSubnet([]ifaceAddr{
+		{"en0", ip4("169.254.68.183"), slash16},
+		{"en5", ip4("192.168.1.2"), slash24},
+	})
+	if !ok || addr != ip4("192.168.1.2") || mask != slash24 {
+		t.Errorf("got %s/%x ok=%v, want 192.168.1.2", ipv4String(addr), mask, ok)
+	}
+}
+
+func TestPickSubnetPrefersARoutableNonEnInterfaceOverLinkLocal(t *testing.T) {
+	addr, _, _ := pickSubnet([]ifaceAddr{
+		{"en0", ip4("169.254.1.1"), slash16},
+		{"bridge0", ip4("10.0.0.5"), slash24},
+	})
+	if addr != ip4("10.0.0.5") {
+		t.Errorf("got %s, want 10.0.0.5", ipv4String(addr))
+	}
+}
+
+func TestPickSubnetFallsBackToLinkLocalWhenThatIsAllThereIs(t *testing.T) {
+	addr, _, ok := pickSubnet([]ifaceAddr{{"en0", ip4("169.254.1.1"), slash16}})
+	if !ok || addr != ip4("169.254.1.1") {
+		t.Errorf("got %s ok=%v, want 169.254.1.1", ipv4String(addr), ok)
+	}
+}
+
+func TestPickSubnetKeepsTheFirstEnInterface(t *testing.T) {
+	addr, _, _ := pickSubnet([]ifaceAddr{
+		{"utun3", ip4("100.64.0.2"), slash24},
+		{"en0", ip4("192.168.1.2"), slash24},
+		{"en1", ip4("192.168.2.9"), slash24},
+	})
+	if addr != ip4("192.168.1.2") {
+		t.Errorf("got %s, want 192.168.1.2", ipv4String(addr))
+	}
+}
+
+func TestPickSubnetWithNoInterfacesIsNotOK(t *testing.T) {
+	if _, _, ok := pickSubnet(nil); ok {
+		t.Error("ok with no interfaces")
+	}
+}
