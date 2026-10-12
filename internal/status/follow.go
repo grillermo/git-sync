@@ -65,11 +65,15 @@ type FollowOptions struct {
 	Fingerprint func() string
 	Tick        time.Duration // how often to look for a change
 	Refresh     time.Duration // print anyway this often, so relative times and dead markers update
+	// Replaced reports whether the installed binary has changed since start.
+	// Follow then returns nil so its reader restarts it on the new version,
+	// as the menu bar app does. Nil means never.
+	Replaced func() bool
 }
 
 // Follow writes a snapshot as one JSON line now, and again whenever the
-// fingerprint changes or Refresh passes, until ctx ends (returns nil) or a
-// write fails (the reader is gone; returns the error). Polling, rather than
+// fingerprint changes or Refresh passes, until ctx ends or the binary is
+// replaced (returns nil) or a write fails (the reader is gone; returns the error). Polling, rather than
 // a file-notification library, keeps git-sync free of new dependencies and
 // costs one stat per watched entry per tick.
 func Follow(ctx context.Context, w io.Writer, o FollowOptions) error {
@@ -93,6 +97,9 @@ func Follow(ctx context.Context, w io.Writer, o FollowOptions) error {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
+			if o.Replaced != nil && o.Replaced() {
+				return nil
+			}
 			fp := o.Fingerprint()
 			if fp == last && time.Since(sent) < o.Refresh {
 				continue

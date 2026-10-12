@@ -41,6 +41,7 @@ make test           # go test ./...
 make lint           # go vet ./... && gofmt -l .
 make check          # lint + test — run this before considering anything done
 make install BASE_DIR=~/code   # build then run: ./git-sync install $(BASE_DIR)
+make update-mesh    # build then send it to every machine: ./bin/git-sync update-mesh
 ```
 
 After successfully adding a new feature (checks green), always rebuild the
@@ -106,10 +107,11 @@ special-casing, for any number of machines in the mesh.
 
 ## Architecture
 
-Thirteen subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
+Fourteen subcommands off one binary (`cmd/git-sync/main.go` dispatches; the
 actual command bodies live in `cmd/git-sync/stubs.go` — despite the
 filename, that file is not stub code, it's the real implementation of every
-`cmdX` function). Six are for humans (`install`, `uninstall`, `report`,
+`cmdX` function). Seven are for humans (`install`, `uninstall`, `update-mesh` — replaces
+the installed binary on every machine with the one it is run as, `report`,
 `unlock` — clears a stuck receiver lock by hand, `service` — installs or
 removes the login service mesh-wide, or with `--local` just here, `activate
 [<repo>]` — runs a repo's `./activate` now); seven are
@@ -341,7 +343,9 @@ Package layering, leaves to composition:
   (events share an `activity.Event.Run` id) counts, and `offline` events
   never set or clear a problem. `Follow` polls a fingerprint of the log,
   `pending/` and `running/` every 500 ms and emits a snapshot line when it
-  changes, or every minute regardless.
+  changes, or every minute regardless. It returns once the installed binary
+  is replaced (`FollowOptions.Replaced`), so the menu bar app — which
+  relaunches it on exit — picks up a new version from `update-mesh`.
 
 `cmd/git-sync/pending.go` saves the picker's repo selection in the temp
 dir until a run pairs every machine, so repeated installs while fixing ssh

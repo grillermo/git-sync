@@ -122,3 +122,33 @@ func TestWriteTextShowsReposAndPending(t *testing.T) {
 		t.Errorf("text output:\n%s", b.String())
 	}
 }
+
+func TestFollowStopsWhenTheBinaryIsReplaced(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		replaced bool
+	)
+	out := &lines{}
+	done := make(chan error, 1)
+	go func() {
+		done <- status.Follow(context.Background(), out, status.FollowOptions{
+			Collect:     func() status.Snapshot { return status.Snapshot{} },
+			Fingerprint: func() string { return "same" },
+			Tick:        5 * time.Millisecond,
+			Refresh:     time.Hour,
+			Replaced:    func() bool { mu.Lock(); defer mu.Unlock(); return replaced },
+		})
+	}()
+	waitFor(t, "the first snapshot", func() bool { return out.count() == 1 })
+	mu.Lock()
+	replaced = true
+	mu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Follow = %v, want nil so the reader restarts it", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Follow kept running on a replaced binary")
+	}
+}

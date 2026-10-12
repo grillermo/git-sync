@@ -427,3 +427,12 @@ func TestUninstallFolderRefusesPurge(t *testing.T) {
 		t.Errorf("config must be untouched: %v", err)
 	}
 }
+
+func TestUpdateMeshNeedsAnInstall(t *testing.T) {
+	testutil.NewSandbox(t)
+	var errBuf bytes.Buffer
+	if code := run([]string{"update-mesh"}, io.Discard, &errBuf); code != 1 ||
+		!strings.Contains(errBuf.String(), "git-sync install") {
+		t.Errorf("update-mesh with no config = %d: %s", code, errBuf.String())
+	}
+}

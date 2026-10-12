@@ -289,20 +289,26 @@ func ServiceMesh(cfg config.Config, self string, remove bool, out io.Writer) err
 // binary install the service there - so the unit is written by code that
 // knows the peer's own OS and paths.
 func installPeerService(p config.Peer, self string) error {
-	target := p.Target()
-	probe, err := Probe(target)
+	probe, err := sendPeerBinary(p, self)
 	if err != nil {
 		return err
+	}
+	return ssh(p.Target(), probe.Home+"/.gitsync/bin/git-sync service install --local")
+}
+
+// sendPeerBinary replaces a peer's installed git-sync with self, or with the
+// build for the peer's platform beside it.
+func sendPeerBinary(p config.Peer, self string) (PeerProbe, error) {
+	probe, err := Probe(p.Target())
+	if err != nil {
+		return probe, err
 	}
 	o := PeerOptions{Self: self, Builds: BuildsDir(self)}
 	binPath, err := o.binaryFor(probe.Uname)
 	if err != nil {
-		return err
+		return probe, err
 	}
-	if err := sendBinary(target, probe.Home+"/.gitsync", binPath); err != nil {
-		return err
-	}
-	return ssh(target, probe.Home+"/.gitsync/bin/git-sync service install --local")
+	return probe, sendBinary(p.Target(), probe.Home+"/.gitsync", binPath)
 }
 
 // BuildsDir is where per-platform builds sit: beside the binary this was run

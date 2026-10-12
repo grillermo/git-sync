@@ -15,6 +15,7 @@ Usage:
   git-sync install                     sync just the repo you are in; asks which machines to sync it with
   git-sync uninstall [--purge] [--local]  stop syncing (mesh-wide by default; --local limits it to this machine; --purge also deletes config and history)
   git-sync uninstall [--local] <folder>  stop syncing just that repo (mesh-wide by default)
+  git-sync update-mesh                 send this build of git-sync to every machine in the mesh
   git-sync report [flags]              browse sync activity, grouped by repo
   git-sync unlock [<repo>]             clear a stuck sync lock (default: this repo)
   git-sync activate [<repo>]           run a repo's ./activate now (default: this repo)
@@ -42,6 +43,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdInstall(args[1:], stdout, stderr)
 	case "uninstall":
 		return cmdUninstall(args[1:], stdout, stderr)
+	case "update-mesh":
+		return cmdUpdateMesh(args[1:], stdout, stderr)
 	case "report":
 		return cmdReport(args[1:], stdout, stderr)
 	case "unlock":

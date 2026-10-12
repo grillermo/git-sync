@@ -1,4 +1,4 @@
-.PHONY: build test lint check install
+.PHONY: build test lint check install update-mesh
 
 build:
 	./build
@@ -14,3 +14,6 @@ check: lint test
 
 install: build
 	./bin/git-sync install $(BASE_DIR)
+
+update-mesh: build
+	./bin/git-sync update-mesh

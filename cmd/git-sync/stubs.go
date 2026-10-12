@@ -788,6 +788,35 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// cmdUpdateMesh replaces the installed git-sync on every machine with the
+// binary it is run as - after a rebuild, the repo's bin/git-sync.
+func cmdUpdateMesh(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("update-mesh", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: git-sync update-mesh")
+		return 2
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(stderr, "git-sync is not installed here; run git-sync install first")
+		return 1
+	}
+	self, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(stderr, "locating this binary:", err)
+		return 1
+	}
+	if err := setup.UpdateMesh(cfg, self, stdout); err != nil {
+		fmt.Fprintln(stderr, "update-mesh failed:", err)
+		return 1
+	}
+	return 0
+}
+
 // uninstallRepo stops syncing one repo - named by folder, or by its
 // base_dir-relative path when a peer is told to - mesh-wide unless local.
 func uninstallRepo(folder, rel string, local bool, stdout, stderr io.Writer) int {
@@ -921,11 +950,27 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		Fingerprint: func() string { return status.Fingerprint(status.Watched()...) },
 		Tick:        500 * time.Millisecond,
 		Refresh:     time.Minute,
+		Replaced:    binaryReplaced(),
 	})
 	if err != nil {
 		return 1
 	}
 	return 0
+}
+
+// binaryReplaced reports whether the installed binary has been swapped for
+// a new file (update-mesh, install) since it was called: a long-running
+// process exits on that so it comes back on the new version. A binary that
+// is missing at the start - not installed - never counts as replaced.
+func binaryReplaced() func() bool {
+	start, err := os.Stat(config.BinPath())
+	if err != nil {
+		return func() bool { return false }
+	}
+	return func() bool {
+		now, err := os.Stat(config.BinPath())
+		return err == nil && !os.SameFile(start, now)
+	}
 }
 
 func cmdHook(args []string, stderr io.Writer) int {
