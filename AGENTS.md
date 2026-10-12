@@ -272,7 +272,11 @@ Package layering, leaves to composition:
   this machine back on to its LAN IP, not `os.Hostname()`.
 - **`internal/setup`** — `install.go` (`Install`/`Uninstall` for the local
   machine, plus mesh-wide `UninstallMesh` which sshes each peer to run its
-  own local uninstall before cleaning up here — copies the binary, writes the
+  own local uninstall before cleaning up here, and `RemoveRepo`/
+  `RemoveRepoMesh` for `uninstall <folder>`, which only drops that repo from
+  every machine's allowlist — peers get the hidden `uninstall --local --repo
+  <rel>`, a flag so an older peer binary rejects it instead of ignoring a
+  positional and uninstalling everything — copies the binary, writes the
   `post-commit`/`pre-commit`/`pre-push` hook shims, sets `core.hooksPath`),
   `provision.go` (pushes binary/config/hook to one peer over ssh, given that
   peer's own `Options.Peers` list, idempotently — called once per machine in

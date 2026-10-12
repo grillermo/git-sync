@@ -312,3 +312,69 @@ func SelfHost(flagVal string) string {
 	h, _ := os.Hostname()
 	return h
 }
+
+// RemoveRepo takes rel off this machine's allowlist, leaving git-sync and
+// every other repo installed. A repo not selected here is not an error, so
+// re-running a half-finished mesh-wide removal is safe. Its pending and
+// activate queue entries need no cleanup: both drop entries for repos no
+// longer selected on their own.
+func RemoveRepo(rel string, out io.Writer) error {
+	if out == nil {
+		out = io.Discard
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if err := cfg.ValidateRel(rel); err != nil {
+		return err
+	}
+	if !cfg.IsSelected(rel) {
+		fmt.Fprintf(out, "%s is not synced here\n", rel)
+		return nil
+	}
+	one := config.Config{Repos: []string{rel}}
+	var keep []string
+	for _, r := range cfg.Repos {
+		if !one.IsSelected(r) {
+			keep = append(keep, r)
+		}
+	}
+	cfg.Repos = keep
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "stopped syncing %s\n", rel)
+	return nil
+}
+
+// RemoveRepoMesh takes rel off the allowlist on every machine in the mesh,
+// peers first for the same reason as UninstallMesh. Peers get the hidden
+// --repo flag rather than a positional path: an older binary rejects an
+// unknown flag, but would ignore a positional one and uninstall everything.
+func RemoveRepoMesh(cfg config.Config, rel string, out io.Writer) error {
+	if out == nil {
+		out = io.Discard
+	}
+	if err := cfg.ValidateRel(rel); err != nil {
+		return err
+	}
+
+	var unreachable []config.Peer
+	for _, p := range cfg.PeerList() {
+		if err := ssh(p.Target(), "~/.gitsync/bin/git-sync uninstall --local --repo "+shellQuote(rel)); err != nil {
+			unreachable = append(unreachable, p)
+			continue
+		}
+		fmt.Fprintf(out, "stopped syncing %s on %s\n", rel, p.Host)
+	}
+
+	if err := RemoveRepo(rel, out); err != nil {
+		return err
+	}
+
+	for _, p := range unreachable {
+		fmt.Fprintf(out, "WARNING: could not update %s; run there by hand: git-sync uninstall --local <path to %s>\n", p.Host, rel)
+	}
+	return nil
+}

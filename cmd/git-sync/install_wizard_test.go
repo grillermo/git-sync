@@ -2,13 +2,17 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
+	"github.com/grillermo/git-sync/internal/status"
 	"github.com/grillermo/git-sync/internal/testutil"
 )
 
@@ -316,5 +320,110 @@ func TestInstallWithNoBaseDirOutsideARepoIsAUsageError(t *testing.T) {
 
 	if code := run([]string{"install", "--no-peer"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("install = %d, want 2", code)
+	}
+}
+
+func TestUninstallFolderStopsSyncingJustThatRepoMeshWide(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	work := sb.MakeRepo("group/proj")
+	sb.MakeRepo("other")
+	testutil.SaveConfigWithPeers(t, sb, []config.Peer{
+		{Host: "b.local", User: "t"}, {Host: "c.local", User: "t"},
+	}, nil)
+	sb.StubSSH(0)
+
+	// A subfolder of the repo names the repo.
+	sub := filepath.Join(work, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"uninstall", sub}, &out, &errBuf); code != 0 {
+		t.Fatalf("uninstall <folder> = %d: %s", code, errBuf.String())
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("git-sync itself must stay installed: %v", err)
+	}
+	if cfg.IsSelected("group/proj") || !cfg.IsSelected("other") {
+		t.Errorf("repos = %v, want only [other]", cfg.Repos)
+	}
+	calls := sb.SSHCalls()
+	for _, host := range []string{"b.local", "c.local"} {
+		if !strings.Contains(calls, host) {
+			t.Errorf("%s was never told; calls:\n%s", host, calls)
+		}
+	}
+	if !strings.Contains(calls, "uninstall --local --repo group/proj") {
+		t.Errorf("peers must get the --repo machine form:\n%s", calls)
+	}
+}
+
+func TestUninstallFolderDropsTheRepoFromStatus(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	work := sb.MakeRepo("proj")
+	testutil.SaveConfigWithPeers(t, sb, []config.Peer{{Host: "b.local", User: "t"}}, nil)
+	_ = activity.Append(activity.Event{Repo: "proj", Op: activity.OpPush, Status: activity.StatusError, Msg: "rejected"})
+	sb.StubSSH(0)
+
+	if code := run([]string{"uninstall", work}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("uninstall <folder> = %d", code)
+	}
+	var out bytes.Buffer
+	if code := run([]string{"status", "--json"}, &out, io.Discard); code != 0 {
+		t.Fatalf("status --json = %d", code)
+	}
+	var s status.Snapshot
+	if err := json.Unmarshal(out.Bytes(), &s); err != nil {
+		t.Fatalf("not one JSON snapshot: %v\n%s", err, out.String())
+	}
+	if len(s.Repos) != 0 || s.Problems != 0 {
+		t.Errorf("the menu bar app must no longer see the repo: %+v", s)
+	}
+}
+
+func TestUninstallRepoLocalIsIdempotent(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("proj")
+	testutil.SaveConfigWithPeers(t, sb, []config.Peer{{Host: "b.local", User: "t"}}, nil)
+	sb.StubSSH(0)
+
+	for i := 0; i < 2; i++ {
+		if code := run([]string{"uninstall", "--local", "--repo", "proj"}, io.Discard, io.Discard); code != 0 {
+			t.Fatalf("run %d: uninstall --local --repo = %d", i, code)
+		}
+	}
+	if strings.Contains(sb.SSHCalls(), "b.local") {
+		t.Errorf("--local must not ssh anywhere:\n%s", sb.SSHCalls())
+	}
+}
+
+func TestUninstallFolderNotSyncedFails(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("proj")
+	stray := sb.MakeRepo("stray")
+	testutil.SaveConfigWithPeers(t, sb, []config.Peer{{Host: "b.local", User: "t"}}, []string{"proj"})
+	sb.StubSSH(0)
+
+	var errBuf bytes.Buffer
+	if code := run([]string{"uninstall", stray}, io.Discard, &errBuf); code != 1 {
+		t.Errorf("uninstall <unsynced folder> = %d, want 1: %s", code, errBuf.String())
+	}
+	if sb.SSHCalls() != "" {
+		t.Errorf("nothing should be sent to peers:\n%s", sb.SSHCalls())
+	}
+}
+
+func TestUninstallFolderRefusesPurge(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	work := sb.MakeRepo("proj")
+	testutil.SaveConfigWithPeers(t, sb, nil, nil)
+
+	if code := run([]string{"uninstall", "--purge", work}, io.Discard, io.Discard); code != 2 {
+		t.Errorf("uninstall --purge <folder> = %d, want 2", code)
+	}
+	if _, err := config.Load(); err != nil {
+		t.Errorf("config must be untouched: %v", err)
 	}
 }

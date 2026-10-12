@@ -732,8 +732,34 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	purge := fs.Bool("purge", false, "also delete config and activity history")
 	local := fs.Bool("local", false, "only uninstall this machine, not the rest of the mesh")
+	// --repo is the machine form of `uninstall <folder>`, sent to each peer
+	// with the repo's base_dir-relative path. Hidden from the usage text.
+	repo := fs.String("repo", "", "")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	// A folder may come before or after the flags.
+	var folder string
+	if fs.NArg() > 0 {
+		folder = fs.Arg(0)
+		if err := fs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		if fs.NArg() > 0 {
+			fmt.Fprintln(stderr, "uninstall: name one folder at a time")
+			return 2
+		}
+	}
+	if folder != "" || *repo != "" {
+		if folder != "" && *repo != "" {
+			fmt.Fprintln(stderr, "uninstall: give a folder or --repo, not both")
+			return 2
+		}
+		if *purge {
+			fmt.Fprintln(stderr, "uninstall: --purge removes git-sync entirely; it does not combine with a folder")
+			return 2
+		}
+		return uninstallRepo(folder, *repo, *local, stdout, stderr)
 	}
 
 	if *local {
@@ -760,6 +786,58 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// uninstallRepo stops syncing one repo - named by folder, or by its
+// base_dir-relative path when a peer is told to - mesh-wide unless local.
+func uninstallRepo(folder, rel string, local bool, stdout, stderr io.Writer) int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(stderr, "uninstall:", err)
+		return 1
+	}
+	if folder != "" {
+		if rel, err = folderRel(cfg, folder); err != nil {
+			fmt.Fprintln(stderr, "uninstall:", err)
+			return 2
+		}
+		if !cfg.IsSelected(rel) {
+			fmt.Fprintf(stderr, "uninstall: %s is not synced\n", rel)
+			return 1
+		}
+	}
+	if local {
+		err = setup.RemoveRepo(rel, stdout)
+	} else {
+		err = setup.RemoveRepoMesh(cfg, rel, stdout)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "uninstall failed:", err)
+		return 1
+	}
+	return 0
+}
+
+// folderRel is the base_dir-relative path of the repo at folder, which may be
+// relative to the working directory or a subfolder of the repo. A folder
+// that is no longer a git repo (deleted, say) still resolves by its path.
+func folderRel(cfg config.Config, folder string) (string, error) {
+	abs, err := filepath.Abs(folder)
+	if err != nil {
+		return "", err
+	}
+	if root, err := gitcmd.Toplevel(abs); err == nil {
+		abs = root
+	} else if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	// Toplevel resolves symlinks, so base_dir must be compared resolved too,
+	// as currentRel does.
+	rc := cfg
+	if resolved, err := filepath.EvalSymlinks(rc.BaseDir); err == nil {
+		rc.BaseDir = resolved
+	}
+	return rc.RepoRel(abs)
 }
 
 func cmdReport(args []string, stdout, stderr io.Writer) int {
