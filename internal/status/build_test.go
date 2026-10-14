@@ -93,12 +93,24 @@ func TestOfflineIsNeverAProblem(t *testing.T) {
 	}
 }
 
-func TestOfflineDoesNotClearAProblem(t *testing.T) {
+func TestOfflineReplacesAnEarlierProblem(t *testing.T) {
+	// The offline attempt is queued, and its delivery runs a fresh receive:
+	// the older failure no longer says anything, the pending queue does.
+	s := build(cfg("a"),
+		notify(1, "a", "pc", activity.StatusError, "peer pc receive failed (exit 127)"),
+		notify(2, "a", "pc", activity.StatusOffline, "peer pc unreachable, will retry"),
+	)
+	r := repo(t, s, "a")
+	if len(r.Problems) != 0 || s.Problems != 0 {
+		t.Errorf("got %+v", r)
+	}
+}
+
+func TestOfflineIsNotASync(t *testing.T) {
 	r := repo(t, build(cfg("a"),
-		notify(1, "a", "pc", activity.StatusError, "receive failed"),
-		notify(2, "a", "pc", activity.StatusOffline, "unreachable, will retry"),
+		notify(1, "a", "pc", activity.StatusOffline, "peer pc unreachable, will retry"),
 	), "a")
-	if r.State != status.StateError {
+	if r.State != status.StateNever || r.LastSync != nil {
 		t.Errorf("got %+v", r)
 	}
 }
@@ -189,8 +201,10 @@ func TestUnselectedReposAreLeftOut(t *testing.T) {
 }
 
 func TestPendingIsListedOldestFirstWithPaths(t *testing.T) {
+	c := cfg("a", "b")
+	c.Peers = []config.Peer{{Host: "pc", User: "u"}}
 	s := status.Build(status.Input{
-		Config: cfg("a", "b"),
+		Config: c,
 		Pending: []syncer.PendingEntry{
 			{Kind: "notify", Rel: "b", Host: "pc", Since: at(5)},
 			{Kind: "push", Rel: "a", Since: at(2)},
@@ -198,6 +212,23 @@ func TestPendingIsListedOldestFirstWithPaths(t *testing.T) {
 		Now: at(60),
 	})
 	if len(s.Pending) != 2 || s.Pending[0].Repo != "a" || s.Pending[1].Peer != "pc" || s.Pending[1].Path != "/code/b" {
+		t.Errorf("got %+v", s.Pending)
+	}
+}
+
+func TestPendingForAMachineNoLongerInTheMeshIsLeftOut(t *testing.T) {
+	c := cfg("a")
+	c.Peers = []config.Peer{{Host: "192.168.1.4", User: "u"}}
+	s := status.Build(status.Input{
+		Config: c,
+		Pending: []syncer.PendingEntry{
+			{Kind: "notify", Rel: "a", Host: "macaliada.local", Since: at(1)},
+			{Kind: "notify", Rel: "a", Host: "192.168.1.4", Since: at(2)},
+			{Kind: "push", Rel: "a", Since: at(3)},
+		},
+		Now: at(60),
+	})
+	if len(s.Pending) != 2 || s.Pending[0].Peer != "192.168.1.4" || s.Pending[1].Kind != "push" {
 		t.Errorf("got %+v", s.Pending)
 	}
 }

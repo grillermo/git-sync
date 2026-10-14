@@ -130,6 +130,19 @@ func retryPending(cfg config.Config, current string, reached map[string]bool) {
 		}
 	}
 
+	// A backlog kept for a host no longer in the mesh (removed, or renamed
+	// to its IP) can never be delivered, so it goes.
+	inMesh := map[string]bool{}
+	for _, p := range cfg.PeerList() {
+		inMesh[url.PathEscape(p.Host)] = true
+	}
+	hosts, _ := os.ReadDir(pendingPath(pendingNotify))
+	for _, h := range hosts {
+		if h.IsDir() && !inMesh[h.Name()] {
+			_ = os.RemoveAll(filepath.Join(pendingPath(pendingNotify), h.Name()))
+		}
+	}
+
 	// Then each peer's backlog, peers in parallel as in notifyAll. A peer is
 	// drained one repo at a time and abandoned at its first failure: if it
 	// is down, every further attempt would just wait out ConnectTimeout.

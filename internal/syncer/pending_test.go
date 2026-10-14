@@ -210,6 +210,25 @@ func TestRetryDropsARepoNoLongerSelected(t *testing.T) {
 	}
 }
 
+func TestRetryDropsTheBacklogOfAMachineNoLongerInTheMesh(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	a, _ := twoRepoMesh(t, sb, "laptop.local")
+	sb.StubSSH(255)
+	testutil.Commit(t, sb, a, "one")
+	syncer.Push("group/a")
+
+	// The peer is renamed: its old name will never be in reach again.
+	testutil.SaveConfigWithPeers(t, sb, []config.Peer{{Host: "10.0.0.4", User: "t"}}, []string{"group/a", "group/b"})
+	sb.StubSSH(0)
+	syncer.Retry()
+	if n := countCalls(sb, "laptop.local", "group/a"); n != 1 {
+		t.Errorf("retried a machine no longer in the mesh: %d calls", n)
+	}
+	if syncer.HasPending() {
+		t.Errorf("left its backlog queued: %v", pendingEntries(t, sb, "notify"))
+	}
+}
+
 func TestListAllPendingReturnsPushesAndNotifies(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	a, b := twoRepoMesh(t, sb, "peer.local")

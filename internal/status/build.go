@@ -92,8 +92,9 @@ type channel struct {
 
 // Build turns the inputs into a snapshot. For each channel only its latest
 // run counts: the channel has a problem if that run logged a warn or an
-// error. Skips never count, and neither does offline: an out-of-reach
-// machine is reported through the pending queue instead.
+// error. Skips never count. Offline is a run but never a problem: the
+// delivery was queued, so it replaces whatever the channel last reported,
+// and the pending queue reports the out-of-reach machine instead.
 func Build(in Input) Snapshot {
 	snap := Snapshot{At: sec(in.Now), Repos: []Repo{}, Pending: []Pending{}}
 
@@ -108,7 +109,7 @@ func Build(in Input) Snapshot {
 			lastSeen[e.Repo] = e.Time
 		}
 		switch effective(e) {
-		case activity.StatusSkip, activity.StatusOffline:
+		case activity.StatusSkip:
 			continue
 		case activity.StatusOK:
 			if e.Time.After(lastSync[e.Repo]) {
@@ -125,7 +126,7 @@ func Build(in Input) Snapshot {
 		run := runOf(in.Events[last], last)
 		for _, i := range idx {
 			e := in.Events[i]
-			if runOf(e, i) != run || !e.IsProblem() {
+			if runOf(e, i) != run || !e.IsProblem() || effective(e) == activity.StatusOffline {
 				continue
 			}
 			problems[k.repo] = append(problems[k.repo], Problem{
@@ -167,9 +168,13 @@ func Build(in Input) Snapshot {
 		return a.Repo < b.Repo
 	})
 
+	inMesh := map[string]bool{}
+	for _, p := range in.Config.PeerList() {
+		inMesh[p.Host] = true
+	}
 	for _, p := range in.Pending {
-		if !in.Config.IsSelected(p.Rel) {
-			continue
+		if !in.Config.IsSelected(p.Rel) || (p.Kind == "notify" && !inMesh[p.Host]) {
+			continue // the next retry drops it
 		}
 		snap.Pending = append(snap.Pending, Pending{
 			Kind: p.Kind, Repo: p.Rel, Path: in.Config.RepoPath(p.Rel), Peer: p.Host, Since: sec(p.Since),
