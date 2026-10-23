@@ -4,8 +4,8 @@ import GitSyncStatusCore
 
 private enum Col {
     static let repo: CGFloat = 170
-    static let state: CGFloat = 130
-    static let when: CGFloat = 90
+    static let state: CGFloat = 116
+    static let when: CGFloat = 68
     static let rowHeight: CGFloat = 24
 }
 
