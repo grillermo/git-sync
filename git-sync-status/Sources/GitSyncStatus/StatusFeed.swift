@@ -36,6 +36,22 @@ final class StatusFeed {
         process?.terminate()
     }
 
+    /// Starts `git-sync <arguments>` and leaves it running; its progress and
+    /// result arrive through the status feed like any other sync.
+    func run(_ arguments: [String]) {
+        let p = Process()
+        p.executableURL = Self.binary
+        p.arguments = arguments
+        p.standardInput = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do {
+            try p.run()
+        } catch {
+            publishError("cannot run \(Self.binary.path): \(error.localizedDescription)")
+        }
+    }
+
     private func launch() {
         guard !stopped else { return }
         let p = Process()

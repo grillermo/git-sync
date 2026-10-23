@@ -72,11 +72,25 @@ func decoded() throws -> Snapshot {
     #expect(repos.map(\.tone) == [.error, .warn, .error])
     #expect(repos[0].fullDetail == "[this Mac] receive: stash failed, not touching this repo\n[this Mac] activate: ./activate exited 1")
     #expect(Set(repos.map(\.id)).count == 3)
+    // A push from here never redoes this Mac's own receive.
+    #expect(repos.map(\.retry) == [["receive", "currentps"], ["push", "currentps"], ["push", "currentps"]])
 }
 
-@Test func everyRowCopiesItsRepoPath() throws {
+@Test func aFailedActivateHereIsRerunHere() throws {
+    let line = """
+    {"at":"2026-10-09T17:20:00-06:00","syncing":false,"problems":1,"repos":[
+     {"repo":"zsh","path":"/Users/me/c/zsh","state":"warn","running":[],"problems":[
+      {"ts":"2026-10-09T16:20:00-06:00","op":"activate","status":"warn","msg":"./activate exited 1"}]}
+    ],"pending":[]}
+    """.replacingOccurrences(of: "\n", with: "")
+    let (repos, _) = rows(for: try Snapshot.decode(Data(line.utf8)))
+    #expect(repos.map(\.retry) == [["activate", "zsh"]])
+}
+
+@Test func problemsRepushAndPendingDrains() throws {
     let (repos, pending) = rows(for: try decoded())
-    #expect((repos + pending).allSatisfy { $0.path.hasPrefix("/Users/me/c/") })
+    #expect(repos.map(\.retry) == [nil, ["push", "top_cpu"], nil])
+    #expect(pending.map(\.retry) == [["retry"]])
 }
 
 @Test func rowIDsAreUnique() throws {

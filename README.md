@@ -166,8 +166,8 @@ warning naming this when it re-provisions an already-configured peer.
 a glance. The icon turns while git-sync is working and gets a red dot when any
 repo has a problem (a rejected push, diverged history, a failed `./activate`).
 Click it for a table with one row per synced repo (state, last sync, detail)
-and the deliveries still queued for machines that are off. Clicking a row
-copies the repo's path. It reads only `git-sync status --json --follow`.
+and the deliveries still queued for machines that are off. Clicking the
+detail of an error, a warning or a queued delivery retries it. It reads only `git-sync status --json --follow`.
 
 Install it with `git-sync-status/build` (needs Xcode's Swift toolchain and
 `brew install librsvg`). It tests, builds, copies the app into

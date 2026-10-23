@@ -5,7 +5,7 @@ public enum Tone: Sendable, Equatable {
 }
 
 /// One line of the window's table: a repo, or a queued delivery under
-/// "Pending". Clicking any row copies `path`.
+/// "Pending". Clicking its detail runs `git-sync` with `retry`, if set.
 public struct Row: Identifiable, Equatable, Sendable {
     public enum Kind: Sendable, Equatable { case repo, pending }
 
@@ -19,6 +19,9 @@ public struct Row: Identifiable, Equatable, Sendable {
     public var detail: String
     public var fullDetail: String
     public var path: String
+    /// The git-sync arguments that redo what failed, nil when nothing did.
+    /// See `retry(_:_:_:)`; a queued delivery is drained with `retry`.
+    public var retry: [String]? = nil
 }
 
 /// The table's rows, in the order git-sync sent them (it already sorts
@@ -47,9 +50,19 @@ func repoRows(_ r: Snapshot.Repo) -> [Row] {
             id: "repo:\(r.repo):\(m)", kind: .repo, name: r.repo,
             symbol: isError ? "✗" : "⚠", state: isError ? "error" : "warn",
             tone: isError ? .error : .warn, when: r.lastSync,
-            detail: lines.first ?? "", fullDetail: lines.joined(separator: "\n"), path: r.path
+            detail: lines.first ?? "", fullDetail: lines.joined(separator: "\n"), path: r.path,
+            retry: retry(r.repo, m, ps)
         )
     }
+}
+
+/// What redoes a machine's problems with a repo. A push re-notifies every
+/// peer, so they redo their receive and ./activate. This Mac's own receive
+/// and ./activate are not redone by a push - each channel clears only on
+/// its own success - so they run here.
+func retry(_ repo: String, _ machine: String, _ problems: [Snapshot.Problem]) -> [String] {
+    guard machine == "this Mac" else { return ["push", repo] }
+    return problems.contains { $0.op == "receive" } ? ["receive", repo] : ["activate", repo]
 }
 
 /// Where a problem happened: the peer it was sent to, the remote for a push,
@@ -76,7 +89,7 @@ func repoRow(_ r: Snapshot.Repo) -> Row {
     return Row(
         id: "repo:" + r.repo, kind: .repo, name: r.repo, symbol: symbol, state: state, tone: tone,
         when: r.lastSync, detail: problems.first ?? "", fullDetail: problems.joined(separator: "\n"),
-        path: r.path
+        path: r.path, retry: tone == .error || tone == .warn ? ["push", r.repo] : nil
     )
 }
 
@@ -86,7 +99,7 @@ func pendingRow(_ p: Snapshot.Pending) -> Row {
     return Row(
         id: "pending:\(p.kind):\(p.peer ?? ""):\(p.repo)", kind: .pending, name: p.repo,
         symbol: "→", state: "queued", tone: .muted, when: p.since,
-        detail: why, fullDetail: why, path: p.path
+        detail: why, fullDetail: why, path: p.path, retry: ["retry"]
     )
 }
 

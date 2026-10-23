@@ -88,9 +88,13 @@ The popover holds one table:
   no longer truncates an existing marker, so a retry that fails again keeps
   the original time). The section is hidden
   when the queue is empty.
-- **Clicking a row copies the repo's absolute path** (`base_dir/<rel>`) to
-  the clipboard, for a repo row or a pending row alike. A brief "Copied"
-  flash on the row confirms it.
+- **Clicking the detail of a problem or a queued delivery retries it**, by
+  starting the installed `git-sync` in the background and flashing
+  "Retrying…". A problem with a peer or the remote runs `push <repo>`, which
+  re-notifies every peer. A problem on this Mac runs `receive <repo>`, or
+  `activate <repo>` when only `./activate` failed, because a push never
+  redoes this Mac's own receive. A pending row runs `retry`. Other rows do
+  nothing when clicked.
 - A footer line shows the last time a snapshot arrived, and an error line if
   the `git-sync` process itself could not be run.
 
@@ -274,5 +278,4 @@ git-sync-status/
 
 - Mesh-wide status (peers' logs), notifications, a login item, a Linux tray
   equivalent.
-- Acting from the window (unlock, retry now, open report). The only action
-  is copying a repo's path.
+- Acting from the window beyond retrying (unlock, open report).

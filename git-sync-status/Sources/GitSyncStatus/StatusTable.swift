@@ -11,10 +11,10 @@ private enum Col {
 
 /// The window: one row per synced repo (or per machine it has problems with),
 /// then the pending queue, then a
-/// footer. Clicking a row copies its repo's absolute path.
+/// footer. Clicking the detail of a problem or a queued delivery retries it.
 struct StatusTable: View {
     let feed: StatusFeed
-    @State private var copied: String?
+    @State private var retrying: String?
 
     var body: some View {
         let split = feed.snapshot.map { rows(for: $0) } ?? (repos: [], pending: [])
@@ -66,7 +66,7 @@ struct StatusTable: View {
     }
 
     private func line(_ row: Row) -> some View {
-        RowView(row: row, copied: copied == row.id) { copy(row) }
+        RowView(row: row, retrying: retrying == row.id) { retry(row) }
     }
 
     private var footer: some View {
@@ -77,7 +77,7 @@ struct StatusTable: View {
                 Text("Updated \(at.formatted(date: .omitted, time: .standard))").foregroundStyle(.secondary)
             }
             Spacer()
-            Text("Click a row to copy its path").foregroundStyle(.tertiary)
+            Text("Click an error to retry it").foregroundStyle(.tertiary)
             Button("Quit") { NSApp.terminate(nil) }
         }
         .font(.caption)
@@ -85,20 +85,20 @@ struct StatusTable: View {
         .padding(.vertical, 6)
     }
 
-    private func copy(_ row: Row) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(row.path, forType: .string)
-        copied = row.id
+    private func retry(_ row: Row) {
+        guard let args = row.retry else { return }
+        feed.run(args)
+        retrying = row.id
         Task {
             try? await Task.sleep(for: .seconds(1.2))
-            if copied == row.id { copied = nil }
+            if retrying == row.id { retrying = nil }
         }
     }
 }
 
 private struct RowView: View {
     let row: Row
-    let copied: Bool
+    let retrying: Bool
     let action: () -> Void
     @State private var hover = false
 
@@ -115,18 +115,18 @@ private struct RowView: View {
                 Text(ago(row.when, now: context.date)).foregroundStyle(.secondary)
             }
             .frame(width: Col.when, alignment: .leading)
-            Text(copied ? "Copied \(row.path)" : row.detail)
-                .foregroundStyle(copied ? Color.accentColor : Color.primary)
+            Text(retrying ? "Retrying…" : row.detail)
+                .foregroundStyle(retrying ? Color.accentColor : Color.primary)
                 .lineLimit(1).truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onHover { hover = $0 && row.retry != nil }
+                .onTapGesture(perform: action)
         }
         .font(.system(size: 12))
         .frame(height: Col.rowHeight)
         .padding(.horizontal, 12)
         .background(hover ? Color.primary.opacity(0.08) : Color.clear)
-        .contentShape(Rectangle())
-        .onHover { hover = $0 }
-        .onTapGesture(perform: action)
         .help(row.fullDetail.isEmpty ? row.path : row.fullDetail)
     }
 
