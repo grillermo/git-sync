@@ -73,9 +73,15 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	selfUser := fs.String("self-user", "", "the account the peer should ssh back into")
 	peerBaseDir := fs.String("peer-base-dir", "",
 		"base_dir override for --peer-host/--peer-user (use user@host:base_dir with --peer instead)")
+	yes := fs.Bool("yes", false, "never ask anything: take every default, for running unattended")
+	fs.BoolVar(yes, "y", false, "shorthand for --yes")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	// ask is whether install may stop and wait for an answer. Every question
+	// reads stdin, so both ends must be a terminal: with only stdout on one
+	// (a piped or closed stdin), a question reads EOF and quits the install.
+	ask := !*yes && canAsk(stdout)
 	// With no base_dir, install syncs just the repo it is run in: no scan, no
 	// repo picker, but always the machine picker, since choosing where this
 	// repo goes is the point.
@@ -87,7 +93,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	var baseArg, hereRel string
 	if here {
 		var err error
-		if baseArg, hereRel, err = installHere(stdout); err != nil {
+		if baseArg, hereRel, err = installHere(stdout, ask); err != nil {
 			fmt.Fprintln(stderr, "install:", err)
 			return 2
 		}
@@ -125,7 +131,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	// there is no peer yet. Ticking nothing falls through to the prompt below;
 	// a discovery that cannot run at all is only a warning, for the same
 	// reason.
-	if !*noPeer && (*discover || len(peers) == 0) && isTTY(stdout) {
+	if !*noPeer && (*discover || len(peers) == 0) && ask {
 		fmt.Fprintf(stdout, "looking for machines on this network (%s)\n", discovery.ScanDuration)
 		found, ok, err := discoverPeers(peers, stdout)
 		switch {
@@ -139,8 +145,11 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(peers) == 0 && !*noPeer {
-		host := prompt(stdout, "peer hostname: ")
-		user := prompt(stdout, "peer username: ")
+		var host, user string
+		if ask {
+			host = prompt(stdout, "peer hostname: ")
+			user = prompt(stdout, "peer username: ")
+		}
 		if host == "" || user == "" {
 			fmt.Fprintln(stderr, "at least one peer is required (--peer user@host, or --no-peer)")
 			return 2
@@ -169,7 +178,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	paired := false
 	if !*noPeer {
 		self := config.Peer{Host: resolveSelfHost(*selfHost), User: resolveSelfUser(*selfUser)}
-		reachable = connect(self, peers, stdout, stderr)
+		reachable = connect(self, peers, ask, stdout, stderr)
 
 		// Step 4: every machine in the mesh has to be able to ssh to every
 		// other - a missing key between two *peers*, a pair this machine
@@ -177,7 +186,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		// failing notify nobody is watching. Warning only: the rest of the
 		// mesh is still worth setting up.
 		fixes := setup.RenderKeyChecks(stdout, self, setup.CheckKeys(self, peers))
-		if offerFixes(fixes, stdout, stderr) {
+		if ask && offerFixes(fixes, stdout, stderr) {
 			fixes = setup.RenderKeyChecks(stdout, self, setup.CheckKeys(self, peers))
 			if len(fixes) == 0 {
 				fmt.Fprintln(stdout, "every pair of machines connects now")
@@ -196,7 +205,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "syncing %s (base_dir %s)\n", hereRel, base)
 	} else {
 		fmt.Fprintf(stdout, "choosing repos under %s\n", base)
-		repos, err = chooseRepos(base, *all, *only, stdout, stderr)
+		repos, err = chooseRepos(base, *all, *only, ask, stdout, stderr)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -218,7 +227,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 		wants := repoWants(config.Config{BaseDir: base, RemoteNames: remotes}, added)
 		var ok bool
 		clones, ok = checkPeer(reachable, config.Config{BaseDir: base, RemoteNames: remotes}, wants,
-			!*noClone, stdout, stderr)
+			!*noClone, ask, stdout, stderr)
 		if !ok {
 			fmt.Fprintln(stdout, "cancelled; nothing was installed and the peers were not touched")
 			return 0
@@ -279,7 +288,7 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	// so a single unpushed commit on any machine makes every later sync warn
 	// instead of applying, and nothing retries it.
 	if !*noPeer && !*noInitialSync {
-		levelRepos(config.Config{BaseDir: base, RemoteNames: cfgRemotes()}, peers, added, stdout, stderr)
+		levelRepos(config.Config{BaseDir: base, RemoteNames: cfgRemotes()}, peers, added, ask, stdout, stderr)
 	}
 	return 0
 }
@@ -288,8 +297,9 @@ func cmdInstall(args []string, stdout, stderr io.Writer) int {
 // current directory is in. An existing install keeps its base_dir, and the
 // repo has to be under it - moving base_dir would change the identity of
 // every repo already syncing. With nothing installed yet the user is asked
-// for one, defaulting to the repo's parent.
-func installHere(stdout io.Writer) (base, rel string, err error) {
+// for one, defaulting to the repo's parent - which is also the answer when
+// ask is false.
+func installHere(stdout io.Writer, ask bool) (base, rel string, err error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return "", "", err
@@ -303,7 +313,9 @@ func installHere(stdout io.Writer) (base, rel string, err error) {
 		base = cfg.BaseDir
 	} else {
 		def := filepath.Dir(root)
-		base = prompt(stdout, fmt.Sprintf("base_dir, the folder every synced repo lives under [%s]: ", def))
+		if ask {
+			base = prompt(stdout, fmt.Sprintf("base_dir, the folder every synced repo lives under [%s]: ", def))
+		}
 		if base == "" {
 			base = def
 		} else if rest, ok := strings.CutPrefix(base, "~/"); ok {
@@ -380,9 +392,9 @@ func peersFrom(hosts []string, user string, w io.Writer) ([]config.Peer, bool, e
 }
 
 // connect checks this machine can reach every peer over key-only ssh, says
-// exactly what is wrong with each one that it cannot, offers to run the fixes,
-// and returns the peers that answer.
-func connect(self config.Peer, peers []config.Peer, stdout, stderr io.Writer) []config.Peer {
+// exactly what is wrong with each one that it cannot, offers to run the fixes
+// when it may ask, and returns the peers that answer.
+func connect(self config.Peer, peers []config.Peer, ask bool, stdout, stderr io.Writer) []config.Peer {
 	reach := func() ([]config.Peer, []setup.Fix) {
 		var ok []config.Peer
 		var results []setup.KeyResult
@@ -407,7 +419,7 @@ func connect(self config.Peer, peers []config.Peer, stdout, stderr io.Writer) []
 		return ok
 	}
 	render(fixes)
-	if offerFixes(fixes, stdout, stderr) {
+	if ask && offerFixes(fixes, stdout, stderr) {
 		if ok, fixes = reach(); len(fixes) > 0 {
 			render(fixes)
 		}
@@ -418,7 +430,7 @@ func connect(self config.Peer, peers []config.Peer, stdout, stderr io.Writer) []
 	return ok
 }
 
-// offerFixes asks, on a terminal, to run every fix that has commands, and
+// offerFixes asks to run every fix that has commands, and
 // reports whether it ran any. A fix that throws away a recorded host key is
 // asked about on its own and needs a typed "yes": that is the one case where
 // the "fix" could be letting an impostor in.
@@ -433,7 +445,7 @@ func offerFixes(fixes []setup.Fix, stdout, stderr io.Writer) bool {
 			safe = append(safe, f)
 		}
 	}
-	if len(safe)+len(risky) == 0 || !isTTY(stdout) {
+	if len(safe)+len(risky) == 0 {
 		return false
 	}
 
@@ -495,7 +507,7 @@ func resolveSelfUser(flagVal string) string {
 // Never fatal. The install itself has already succeeded by this point, and a
 // repo that cannot be levelled is a thing the user must fix by hand in the
 // repo - not a reason to leave the machine unconfigured.
-func levelRepos(cfg config.Config, peers []config.Peer, repos []string, stdout, stderr io.Writer) {
+func levelRepos(cfg config.Config, peers []config.Peer, repos []string, ask bool, stdout, stderr io.Writer) {
 	fmt.Fprintln(stdout, "levelling repos with their remotes")
 
 	var targets []setup.PeerTarget
@@ -523,8 +535,8 @@ func levelRepos(cfg config.Config, peers []config.Peer, repos []string, stdout, 
 	}
 
 	// This is the one point where git-sync pushes commits the user did not
-	// just make, so on a terminal it asks first.
-	if isTTY(stdout) && !confirm(stdout,
+	// just make, so it asks first when it can.
+	if ask && !confirm(stdout,
 		os.Stdin, "push and fast-forward these now? [enter] yes, [q] skip: ") {
 		fmt.Fprintln(stdout, "skipped; run install again to level them later")
 		return
@@ -538,8 +550,8 @@ func levelRepos(cfg config.Config, peers []config.Peer, repos []string, stdout, 
 //
 // A selection made in the picker is saved (see pendingRepos) until a run
 // pairs every machine; in between, the picker opens with it pre-ticked, and
-// without a terminal it is reused as is.
-func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) ([]string, error) {
+// when it cannot ask it is reused as is.
+func chooseRepos(base string, all bool, only string, ask bool, stdout, stderr io.Writer) ([]string, error) {
 	discovered, err := scan.Repos(base, cfgRemotes())
 	if err != nil {
 		return nil, fmt.Errorf("scanning %s: %w", base, err)
@@ -568,12 +580,12 @@ func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) (
 		current = cfg.Repos
 	}
 
-	if !isTTY(stdout) {
+	if !ask {
 		if pending != nil {
 			return pending, nil
 		}
 		return nil, errors.New(
-			"no terminal for the repo picker: pass --all or --repos a,b,c")
+			"no terminal for the repo picker (or --yes): pass --all or --repos a,b,c")
 	}
 
 	repos, ok, err := picker.Choose(discovered, current, pending)
@@ -590,6 +602,12 @@ func chooseRepos(base string, all bool, only string, stdout, stderr io.Writer) (
 func isTTY(w io.Writer) bool {
 	f, isFile := w.(*os.File)
 	return isFile && term.IsTerminal(int(f.Fd()))
+}
+
+// canAsk reports whether a question written to stdout can be answered on
+// stdin: both have to be a terminal.
+func canAsk(stdout io.Writer) bool {
+	return isTTY(stdout) && term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // repoWants pairs each selected repo with the remote URL this machine syncs
@@ -624,7 +642,7 @@ type peerClones struct {
 // machine is reported alongside the others rather than behind its own
 // separate confirm prompt. With clone set, it also returns the missing repos
 // to clone on each peer; those are announced but do not need confirming.
-func checkPeer(peers []config.Peer, cfg config.Config, repos []setup.RepoWant, clone bool,
+func checkPeer(peers []config.Peer, cfg config.Config, repos []setup.RepoWant, clone, ask bool,
 	stdout, stderr io.Writer) ([]peerClones, bool) {
 	var targets []setup.PeerTarget
 	for _, p := range peers {
@@ -665,9 +683,9 @@ func checkPeer(peers []config.Peer, cfg config.Config, repos []setup.RepoWant, c
 	if total == 0 {
 		return clones, true
 	}
-	// Nothing to decide without a terminal: report and carry on, since the
+	// Nothing to decide when it cannot ask: report and carry on, since the
 	// mismatch is informational and the rest of the install is still correct.
-	if !isTTY(stdout) {
+	if !ask {
 		return clones, true
 	}
 	return clones, confirm(stdout, os.Stdin, "continue anyway? [enter] continue, [q] quit: ")

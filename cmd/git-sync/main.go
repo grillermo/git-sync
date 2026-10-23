@@ -12,7 +12,8 @@ const usage = `git-sync keeps git repos in sync between two or more machines.
 
 Usage:
   git-sync install <base_dir>          pick repos under base_dir and set up every machine in the mesh
-  git-sync install                     sync just the repo you are in; asks which machines to sync it with
+  git-sync install [--yes]             sync just the repo you are in; asks which machines to sync it with
+                                       (--yes: ask nothing, use the configured machines)
   git-sync uninstall [--purge] [--local]  stop syncing (mesh-wide by default; --local limits it to this machine; --purge also deletes config and history)
   git-sync uninstall [--local] <folder>  stop syncing just that repo (mesh-wide by default)
   git-sync update-mesh                 send this build of git-sync to every machine in the mesh

@@ -221,7 +221,7 @@ func TestChooseReposReusesAPendingSelectionWithoutThePicker(t *testing.T) {
 	_ = savePending(sb.BaseDir, []string{"a"})
 
 	// No terminal: without the saved selection this would be an error.
-	got, err := chooseRepos(sb.BaseDir, false, "", io.Discard, io.Discard)
+	got, err := chooseRepos(sb.BaseDir, false, "", false, io.Discard, io.Discard)
 	if err != nil || !reflect.DeepEqual(got, []string{"a"}) {
 		t.Errorf("chooseRepos = %v, %v; want the saved [a]", got, err)
 	}
@@ -434,5 +434,61 @@ func TestUpdateMeshNeedsAnInstall(t *testing.T) {
 	if code := run([]string{"update-mesh"}, io.Discard, &errBuf); code != 1 ||
 		!strings.Contains(errBuf.String(), "git-sync install") {
 		t.Errorf("update-mesh with no config = %d: %s", code, errBuf.String())
+	}
+}
+
+func TestInstallYesAddsTheCurrentRepoWithoutAsking(t *testing.T) {
+	for _, flag := range []string{"--yes", "-y"} {
+		t.Run(flag, func(t *testing.T) {
+			sb := testutil.NewSandbox(t)
+			here := sb.MakeRepo("group/proj")
+			testutil.Chdir(t, here)
+
+			var errOut bytes.Buffer
+			if code := run([]string{"install", flag, "--no-peer"}, io.Discard, &errOut); code != 0 {
+				t.Fatalf("install = %d, want 0; stderr: %s", code, errOut.String())
+			}
+			cfg, _ := config.Load()
+			if want := filepath.Join(sb.BaseDir, "group"); !testutil.SamePath(cfg.BaseDir, want) {
+				t.Errorf("base_dir = %q, want the repo's parent %q", cfg.BaseDir, want)
+			}
+			if want := []string{"proj"}; !reflect.DeepEqual(cfg.Repos, want) {
+				t.Errorf("repos = %v, want %v", cfg.Repos, want)
+			}
+		})
+	}
+}
+
+func TestInstallYesWithTheConfiguredMeshRunsToTheEnd(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	sb.MakeRepo("group/old")
+	here := sb.MakeRepo("group/proj")
+	testutil.SaveConfigWithRepos(t, sb, "b.local", "t", []string{"group/old"})
+	sb.StubSSHScripted(map[string]string{"*uname*": "Darwin arm64", "*HOME*": "/home/t"}, 0)
+	testutil.Chdir(t, here)
+
+	var out, errOut bytes.Buffer
+	if code := run([]string{"install", "--yes"}, &out, &errOut); code != 0 {
+		t.Fatalf("install = %d, want 0; stdout: %s\nstderr: %s", code, out.String(), errOut.String())
+	}
+	if strings.Contains(out.String(), "cancelled") {
+		t.Errorf("an unattended install must never cancel itself:\n%s", out.String())
+	}
+	cfg, _ := config.Load()
+	if want := []string{"group/old", "group/proj"}; !reflect.DeepEqual(cfg.Repos, want) {
+		t.Errorf("repos = %v, want %v", cfg.Repos, want)
+	}
+}
+
+func TestInstallYesWithNoMachineFailsInsteadOfAsking(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	testutil.Chdir(t, sb.MakeRepo("group/proj"))
+
+	var errOut bytes.Buffer
+	if code := run([]string{"install", "--yes"}, io.Discard, &errOut); code != 2 {
+		t.Fatalf("install = %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "--peer user@host") {
+		t.Errorf("stderr = %q, want it to say how to name a machine", errOut.String())
 	}
 }

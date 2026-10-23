@@ -93,6 +93,7 @@ Flags:
 | `--repos a,b,c` | sync exactly these repos; skip the picker (required when there is no terminal) |
 | `--no-peer` | set up this machine only |
 | `--no-initial-sync` | skip levelling the selected repos with their remotes |
+| `--yes`, `-y` | never ask anything, for scripts and agents: the repo's parent as `base_dir` on a first install, only the configured or `--peer` machines (no network scan), no offer to run ssh fixes, carry on past repo mismatches, and push/fast-forward without confirming. Install also stops asking on its own when stdin or stdout is not a terminal |
 | `--self-host` | this machine's hostname, if a peer cannot reach it by its system hostname |
 | `--self-user` | the account peers should SSH back into |
 | `--peer-base-dir` | base_dir override for `--peer-host`/`--peer-user` (use `user@host:base_dir` with `--peer` instead) |
@@ -136,7 +137,10 @@ warning naming this when it re-provisions an already-configured peer.
   no scan and no repo picker; the machine picker always opens so you choose
   where it syncs. Keeps an existing install's `base_dir` (the repo must be
   under it) and its other repos; with nothing installed yet it asks for a
-  `base_dir`, defaulting to the repo's parent.
+  `base_dir`, defaulting to the repo's parent. `git-sync install --yes` does
+  the same without a single question, syncing with the machines already
+  configured (add `--peer user@host` for others), so a script or an agent can
+  run it.
 - `git-sync report [flags]` - browse sync activity, grouped by repo.
   - `--since 24h` - only show activity newer than this
   - `--repo <substr>` - only show repos whose path contains this
