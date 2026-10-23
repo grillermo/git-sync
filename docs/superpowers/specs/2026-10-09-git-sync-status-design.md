@@ -66,7 +66,7 @@ The popover holds one table:
 ```
  Repo              State                 Last sync   Detail
  ────────────────────────────────────────────────────────────────────────
- git-sync          ↻ syncing (push)      now
+ git-sync          ↻ push                now
  agents-configs    ✓ ok                  2 min ago
  top_cpu           ✗ error               1 h ago     push to github failed: rejected (non-fast-forward)
  zsh               ⚠ warn                3 h ago     diverged from github/main, merge by hand

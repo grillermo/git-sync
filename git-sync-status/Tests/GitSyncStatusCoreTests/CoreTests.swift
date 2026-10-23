@@ -39,7 +39,7 @@ func decoded() throws -> Snapshot {
 @Test func mapsReposInOrderAndPendingLast() throws {
     let (repos, pending) = rows(for: try decoded())
     #expect(repos.map(\.name) == ["git-sync", "top_cpu", "zsh"])
-    #expect(repos[0].state == "syncing (push)")
+    #expect(repos[0].state == "push")
     #expect(repos[0].tone == .syncing)
     #expect(repos[1].tone == .error)
     #expect(repos[1].detail == "[192.168.1.1] notify: peer 192.168.1.1 receive failed (exit 1)")

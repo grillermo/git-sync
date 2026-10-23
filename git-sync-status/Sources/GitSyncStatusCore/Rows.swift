@@ -67,7 +67,7 @@ func line(_ p: Snapshot.Problem) -> String {
 func repoRow(_ r: Snapshot.Repo) -> Row {
     let problems = r.problems.map(line)
     let (symbol, state, tone): (String, String, Tone) = switch r.state {
-    case .syncing: ("↻", "syncing (\(r.running.first?.op ?? "…"))", .syncing)
+    case .syncing: ("↻", r.running.first?.op ?? "syncing", .syncing)
     case .error: ("✗", "error", .error)
     case .warn: ("⚠", "warn", .warn)
     case .ok: ("✓", "ok", .ok)
