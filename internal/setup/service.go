@@ -297,18 +297,14 @@ func installPeerService(p config.Peer, self string) error {
 }
 
 // sendPeerBinary replaces a peer's installed git-sync with self, or with the
-// build for the peer's platform beside it.
+// build for the peer's platform beside it, or with one built on the peer.
 func sendPeerBinary(p config.Peer, self string) (PeerProbe, error) {
 	probe, err := Probe(p.Target())
 	if err != nil {
 		return probe, err
 	}
 	o := PeerOptions{Self: self, Builds: BuildsDir(self)}
-	binPath, err := o.binaryFor(probe.Uname)
-	if err != nil {
-		return probe, err
-	}
-	return probe, sendBinary(p.Target(), probe.Home+"/.gitsync", binPath)
+	return probe, o.placeBinary(p.Target(), probe)
 }
 
 // BuildsDir is where per-platform builds sit: beside the binary this was run

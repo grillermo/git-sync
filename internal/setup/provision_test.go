@@ -3,6 +3,7 @@ package setup_test
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -505,18 +506,44 @@ func TestProvisionSendsThePeersPlatformBuild(t *testing.T) {
 	}
 }
 
-func TestProvisionNamesTheMissingBuildAndWritesNothing(t *testing.T) {
+func TestProvisionBuildsOnThePeerWhenThereIsNoLocalBuild(t *testing.T) {
 	sb := testutil.NewSandbox(t)
 	uname, build := foreignPlatform()
 	sb.StubSSHScripted(map[string]string{"uname": uname, "$HOME": "/home/peer"}, 0)
+	builds := filepath.Join(os.Getenv("HOME"), "c", "git-sync", "bin")
+
+	err := setup.ProvisionPeer(setup.PeerOptions{
+		Cfg:  config.Config{BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester"},
+		Self: testutil.WriteScript(t, sb, "fake", "#!/bin/sh\n"), Builds: builds,
+		SelfHost: "a.local", Out: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("ProvisionPeer: %v", err)
+	}
+	target := strings.TrimPrefix(build, "git-sync-")
+	target = strings.Replace(target, "-", "/", 1)
+	calls := sb.SSHCalls()
+	if !strings.Contains(calls, "cd /home/peer/c/git-sync && ") || !strings.Contains(calls, "./build "+target) {
+		t.Errorf("want ./build %s run in the peer's ~/c/git-sync:\n%s", target, calls)
+	}
+	if !strings.Contains(calls, "cp /home/peer/c/git-sync/bin/"+build+" /home/peer/.gitsync/bin/git-sync.tmp") {
+		t.Errorf("the peer's build was never installed:\n%s", calls)
+	}
+}
+
+func TestProvisionNamesTheMissingBuildAndWritesNothingWhenThePeerCannotBuild(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	uname, build := foreignPlatform()
+	sb.StubSSHScripted(map[string]string{"uname": uname, "$HOME": "/home/peer", "*./build*": "echo 'go: not found' >&2; exit 127"}, 0)
 
 	err := setup.ProvisionPeer(setup.PeerOptions{
 		Cfg:  config.Config{BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester"},
 		Self: testutil.WriteScript(t, sb, "fake", "#!/bin/sh\n"), Builds: t.TempDir(),
 		SelfHost: "a.local", Out: io.Discard,
 	})
-	if err == nil || !strings.Contains(err.Error(), build) || !strings.Contains(err.Error(), "./build") {
-		t.Fatalf("want an error naming %s and ./build, got %v", build, err)
+	if err == nil || !strings.Contains(err.Error(), build) || !strings.Contains(err.Error(), "./build") ||
+		!strings.Contains(err.Error(), "go: not found") {
+		t.Fatalf("want an error naming %s, ./build and the peer's build output, got %v", build, err)
 	}
 	if strings.Contains(sb.SSHCalls(), "mkdir") {
 		t.Errorf("nothing should be written to the peer:\n%s", sb.SSHCalls())

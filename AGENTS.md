@@ -285,8 +285,10 @@ Package layering, leaves to composition:
   the mesh; `binaryFor` sends this machine's binary to a same-platform peer,
   else the `git-sync-<os>-<arch>` build from `PeerOptions.Builds`, the
   directory `./build` filled next to the binary `install` was run from — it
-  never cross-compiles, and a missing build is an error naming the `./build`
-  target to run), `repocheck.go` (asks each reachable peer which selected repos it
+  never cross-compiles; when that build is missing, `placeBinary` runs
+  `./build <os>/<arch>` in the peer's own checkout (the same path relative to
+  its home, `~/c/git-sync`, with Homebrew's and the usual Go dirs added to
+  PATH) and installs that, and only errors if the peer cannot build either), `repocheck.go` (asks each reachable peer which selected repos it
   actually has, and whether they point at the same remote — a mismatched
   pair silently never converges otherwise), `clone.go` (`ClonePeerRepos`:
   a repo that check finds *missing* on a peer is cloned there after the

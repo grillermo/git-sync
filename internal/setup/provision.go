@@ -29,6 +29,10 @@ type PeerOptions struct {
 
 var errPeerUnreachable = errors.New("peer unreachable")
 
+// errNoLocalBuild means this machine has no binary for the peer's platform;
+// placeBinary then builds one on the peer itself.
+var errNoLocalBuild = errors.New("no local build")
+
 // IsPeerUnreachable lets Install treat an offline peer as a warning: the local
 // half of the install is still correct, and re-running later finishes the job.
 func IsPeerUnreachable(err error) bool { return errors.Is(err, errPeerUnreachable) }
@@ -48,15 +52,11 @@ func ProvisionPeer(o PeerOptions) error {
 	if err != nil {
 		return err
 	}
-	binPath, err := o.binaryFor(probe.Uname)
-	if err != nil {
-		return err
-	}
 	peerHome := probe.Home
 	peerGitsync := peerHome + "/.gitsync"
 
 	// 3-4. Directories and the binary.
-	if err := sendBinary(target, peerGitsync, binPath); err != nil {
+	if err := o.placeBinary(target, probe); err != nil {
 		return err
 	}
 
@@ -120,6 +120,57 @@ func ProvisionPeer(o PeerOptions) error {
 		o.Peer.Host, len(peerCfg.Peers), o.Peer.Host)
 
 	return nil
+}
+
+// placeBinary installs the binary for the peer's platform at
+// ~/.gitsync/bin/git-sync on the peer: streamed from here when this machine
+// has a build for it, else built on the peer from its own checkout of
+// git-sync, so a mesh of mixed platforms installs without ./build-ing every
+// target first.
+func (o PeerOptions) placeBinary(target string, probe PeerProbe) error {
+	peerGitsync := probe.Home + "/.gitsync"
+	binPath, err := o.binaryFor(probe.Uname)
+	if err == nil {
+		return sendBinary(target, peerGitsync, binPath)
+	}
+	if !errors.Is(err, errNoLocalBuild) {
+		return err
+	}
+	goos, goarch, _ := peerPlatform(probe.Uname) // binaryFor already parsed it
+	repo := o.peerRepo(probe.Home)
+	build := fmt.Sprintf("cd %s && PATH=\"$PATH:%s\" ./build %s/%s",
+		shellQuote(repo), goPaths, goos, goarch)
+	if buildErr := ssh(target, build); buildErr != nil {
+		return fmt.Errorf("%v; building it on the peer in %s failed too: %w", err, repo, buildErr)
+	}
+	if o.Out != nil {
+		fmt.Fprintf(o.Out, "built git-sync for %s/%s on %s in %s\n", goos, goarch, target, repo)
+	}
+	return copyOnPeer(target, peerGitsync, fmt.Sprintf("%s/bin/git-sync-%s-%s", repo, goos, goarch))
+}
+
+// goPaths are where go is usually installed but which a non-interactive ssh
+// shell leaves off PATH (Homebrew's prefix on Apple Silicon above all).
+const goPaths = "/opt/homebrew/bin:/usr/local/go/bin:/usr/local/bin:/usr/lib/go/bin"
+
+// peerRepo is the peer's checkout of git-sync: at the same path relative to
+// its home as the checkout this binary was built in, or ~/c/git-sync when
+// that is unknown.
+func (o PeerOptions) peerRepo(peerHome string) string {
+	if o.Builds == "" {
+		return peerHome + "/c/git-sync"
+	}
+	return PeerBase(filepath.Dir(o.Builds), peerHome, "")
+}
+
+// copyOnPeer installs a binary that already sits on the peer, written then
+// renamed like sendBinary.
+func copyOnPeer(target, peerGitsync, src string) error {
+	return ssh(target, fmt.Sprintf(
+		"mkdir -p %s/bin %s/hooks %s/locks && "+
+			"cp %s %s/bin/git-sync.tmp && chmod +x %s/bin/git-sync.tmp && mv %s/bin/git-sync.tmp %s/bin/git-sync",
+		peerGitsync, peerGitsync, peerGitsync,
+		shellQuote(src), peerGitsync, peerGitsync, peerGitsync, peerGitsync))
 }
 
 // sendBinary creates the peer's ~/.gitsync layout and copies binPath into
@@ -220,16 +271,12 @@ func Target(c config.Config) string { return c.PeerUser + "@" + c.PeerHost }
 // binaryFor picks the binary to send to a peer whose `uname -sm` is uname:
 // this machine's own binary when the platforms match, otherwise the
 // git-sync-<os>-<arch> build that ./build left next to it. Nothing is
-// cross-compiled here; a missing build is an error that says how to make it.
+// cross-compiled here; a missing build is an errNoLocalBuild that says how to
+// make it.
 func (o PeerOptions) binaryFor(uname string) (string, error) {
-	fields := strings.Fields(strings.TrimSpace(uname))
-	if len(fields) < 2 {
-		return "", fmt.Errorf("could not read the peer's platform from %q", uname)
-	}
-	goos, goarch, ok := goPlatform(fields[0], fields[1])
-	if !ok {
-		return "", fmt.Errorf("peer platform %s %s is not supported (darwin or linux, on arm64 or amd64)",
-			fields[0], fields[1])
+	goos, goarch, err := peerPlatform(uname)
+	if err != nil {
+		return "", err
 	}
 	if goos == runtime.GOOS && goarch == runtime.GOARCH {
 		return o.Self, nil
@@ -237,15 +284,29 @@ func (o PeerOptions) binaryFor(uname string) (string, error) {
 	name := fmt.Sprintf("git-sync-%s-%s", goos, goarch)
 	path := filepath.Join(o.Builds, name)
 	if o.Builds == "" {
-		return "", fmt.Errorf("peer is %s/%s but this machine is %s/%s, and there is no build directory to look in; "+
+		return "", fmt.Errorf("%w: peer is %s/%s but this machine is %s/%s, and there is no build directory to look in; "+
 			"run ./build for that target and install from the repo's bin/git-sync",
-			goos, goarch, runtime.GOOS, runtime.GOARCH)
+			errNoLocalBuild, goos, goarch, runtime.GOOS, runtime.GOARCH)
 	}
 	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("peer is %s/%s but %s does not exist; build it with: ./build %s/%s",
-			goos, goarch, path, goos, goarch)
+		return "", fmt.Errorf("%w: peer is %s/%s but %s does not exist; build it with: ./build %s/%s",
+			errNoLocalBuild, goos, goarch, path, goos, goarch)
 	}
 	return path, nil
+}
+
+// peerPlatform reads GOOS / GOARCH from the peer's `uname -sm`.
+func peerPlatform(uname string) (goos, goarch string, err error) {
+	fields := strings.Fields(strings.TrimSpace(uname))
+	if len(fields) < 2 {
+		return "", "", fmt.Errorf("could not read the peer's platform from %q", uname)
+	}
+	goos, goarch, ok := goPlatform(fields[0], fields[1])
+	if !ok {
+		return "", "", fmt.Errorf("peer platform %s %s is not supported (darwin or linux, on arm64 or amd64)",
+			fields[0], fields[1])
+	}
+	return goos, goarch, nil
 }
 
 // goPlatform translates `uname -s` / `uname -m` into GOOS / GOARCH.
