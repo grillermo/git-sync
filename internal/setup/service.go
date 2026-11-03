@@ -304,7 +304,7 @@ func sendPeerBinary(p config.Peer, self string) (PeerProbe, error) {
 		return probe, err
 	}
 	o := PeerOptions{Self: self, Builds: BuildsDir(self)}
-	return probe, o.placeBinary(p.Target(), probe)
+	return probe, o.placeBinary(p, probe)
 }
 
 // BuildsDir is where per-platform builds sit: beside the binary this was run

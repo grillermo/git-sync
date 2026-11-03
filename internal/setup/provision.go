@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/sshx"
 )
@@ -56,7 +57,7 @@ func ProvisionPeer(o PeerOptions) error {
 	peerGitsync := peerHome + "/.gitsync"
 
 	// 3-4. Directories and the binary.
-	if err := o.placeBinary(target, probe); err != nil {
+	if err := o.placeBinary(o.Peer, probe); err != nil {
 		return err
 	}
 
@@ -126,8 +127,9 @@ func ProvisionPeer(o PeerOptions) error {
 // ~/.gitsync/bin/git-sync on the peer: streamed from here when this machine
 // has a build for it, else built on the peer from its own checkout of
 // git-sync, so a mesh of mixed platforms installs without ./build-ing every
-// target first.
-func (o PeerOptions) placeBinary(target string, probe PeerProbe) error {
+// target first. A build is logged; see logBuild.
+func (o PeerOptions) placeBinary(p config.Peer, probe PeerProbe) error {
+	target := p.Target()
 	peerGitsync := probe.Home + "/.gitsync"
 	binPath, err := o.binaryFor(probe.Uname)
 	if err == nil {
@@ -140,13 +142,47 @@ func (o PeerOptions) placeBinary(target string, probe PeerProbe) error {
 	repo := o.peerRepo(probe.Home)
 	build := fmt.Sprintf("cd %s && PATH=\"$PATH:%s\" ./build %s/%s",
 		shellQuote(repo), goPaths, goos, goarch)
-	if buildErr := ssh(target, build); buildErr != nil {
-		return fmt.Errorf("%v; building it on the peer in %s failed too: %w", err, repo, buildErr)
+	out, buildErr := sshx.Command(target, build).CombinedOutput()
+	if buildErr != nil {
+		logBuild(p, peerGitsync, activity.StatusError, fmt.Sprintf("./build %s/%s in %s failed: %s",
+			goos, goarch, repo, lastLine(string(out), buildErr.Error())))
+		return fmt.Errorf("%v; building it on the peer in %s failed too (%v): %s",
+			err, repo, buildErr, strings.TrimSpace(string(out)))
 	}
+	logBuild(p, peerGitsync, activity.StatusOK, fmt.Sprintf("built for %s/%s in %s", goos, goarch, repo))
 	if o.Out != nil {
 		fmt.Fprintf(o.Out, "built git-sync for %s/%s on %s in %s\n", goos, goarch, target, repo)
 	}
 	return copyOnPeer(target, peerGitsync, fmt.Sprintf("%s/bin/git-sync-%s-%s", repo, goos, goarch))
+}
+
+// logBuild records a build on a peer in two activity logs: this machine's,
+// under the peer's name, and the peer's own, as its own. The menu bar app
+// runs on Macs only and install may run elsewhere, so the peer's copy is
+// what shows a Mac that cannot build git-sync. Each clears on its next
+// successful build. Failing to log never fails the install.
+func logBuild(p config.Peer, peerGitsync string, status activity.Status, msg string) {
+	_ = activity.Append(activity.Event{
+		Repo: activity.BuildRepo, Op: activity.OpBuild, Peer: p.Host, Status: status, Msg: msg,
+	})
+	line, err := activity.Line(activity.Event{
+		Repo: activity.BuildRepo, Op: activity.OpBuild, Status: status, Msg: msg,
+	})
+	if err != nil {
+		return
+	}
+	_ = sshIn(p.Target(), fmt.Sprintf("mkdir -p %s && cat >> %s/activity.jsonl", peerGitsync, peerGitsync),
+		bytes.NewReader(line))
+}
+
+// lastLine is the last non-empty line of out - where a build says what
+// went wrong, after go's download chatter - or fallback when there is none.
+func lastLine(out, fallback string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if l := strings.TrimSpace(lines[len(lines)-1]); l != "" {
+		return l
+	}
+	return fallback
 }
 
 // goPaths are where go is usually installed but which a non-interactive ssh
@@ -155,12 +191,16 @@ const goPaths = "/opt/homebrew/bin:/usr/local/go/bin:/usr/local/bin:/usr/lib/go/
 
 // peerRepo is the peer's checkout of git-sync: at the same path relative to
 // its home as the checkout this binary was built in, or ~/c/git-sync when
-// that is unknown.
+// this is not running from one (the installed copy, as the menu bar app's
+// retry runs it).
 func (o PeerOptions) peerRepo(peerHome string) string {
-	if o.Builds == "" {
-		return peerHome + "/c/git-sync"
+	if o.Builds != "" {
+		repo := filepath.Dir(o.Builds)
+		if _, err := os.Stat(filepath.Join(repo, "build")); err == nil {
+			return PeerBase(repo, peerHome, "")
+		}
 	}
-	return PeerBase(filepath.Dir(o.Builds), peerHome, "")
+	return peerHome + "/c/git-sync"
 }
 
 // copyOnPeer installs a binary that already sits on the peer, written then

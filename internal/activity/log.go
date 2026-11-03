@@ -41,6 +41,15 @@ func Append(e Event) error {
 	return err
 }
 
+// Line is e as one line of activity.jsonl, for appending to another
+// machine's log.
+func Line(e Event) ([]byte, error) {
+	if e.Time.IsZero() {
+		e.Time = time.Now()
+	}
+	return marshalBounded(e)
+}
+
 // marshalBounded serialises e, shrinking Msg until the line fits MaxLineLen.
 func marshalBounded(e Event) ([]byte, error) {
 	for {

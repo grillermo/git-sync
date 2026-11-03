@@ -25,9 +25,22 @@ public struct Row: Identifiable, Equatable, Sendable {
 }
 
 /// The table's rows, in the order git-sync sent them (it already sorts
-/// syncing, then problems, then most recent).
+/// syncing, then problems, then most recent), under any failed builds.
 public func rows(for s: Snapshot) -> (repos: [Row], pending: [Row]) {
-    (s.repos.flatMap(repoRows), s.pending.map(pendingRow))
+    ((s.builds ?? []).map(buildRow) + s.repos.flatMap(repoRows), s.pending.map(pendingRow))
+}
+
+/// A machine that could not build git-sync for itself, so it has no binary
+/// for its platform. update-mesh builds on every peer still lacking one; this
+/// Mac's own build was asked for by another machine's install, so it is
+/// retried from there, not here.
+func buildRow(_ p: Snapshot.Problem) -> Row {
+    let m = machine(p)
+    return Row(
+        id: "build:" + m, kind: .repo, name: "git-sync", symbol: "✗", state: "build failed",
+        tone: .error, when: p.ts, detail: line(p), fullDetail: line(p), path: "",
+        retry: m == "this Mac" ? nil : ["update-mesh"]
+    )
 }
 
 /// A repo with problems gets one row per machine they happened on, so an error

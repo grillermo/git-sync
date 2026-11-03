@@ -110,3 +110,20 @@ func decoded() throws -> Snapshot {
     #expect(IconState(nil) == IconState(syncing: false, problem: false))
     #expect(IconState(try decoded()) == IconState(syncing: true, problem: true))
 }
+
+@Test func showsFailedBuildsFirst() throws {
+    let line = #"{"at":"2026-10-09T17:20:00-06:00","syncing":false,"problems":2,"repos":[{"repo":"zsh","path":"/Users/me/c/zsh","state":"never","running":[],"problems":[]}],"builds":[{"ts":"2026-10-09T17:00:00-06:00","op":"build","status":"error","msg":"./build darwin/arm64 in /Users/me/c/git-sync failed: go: not found"},{"ts":"2026-10-09T16:00:00-06:00","op":"build","peer":"192.168.1.4","status":"error","msg":"./build darwin/amd64 in /Users/me/c/git-sync failed: exit 1"}],"pending":[]}"#
+    let (repos, _) = rows(for: try Snapshot.decode(Data(line.utf8)))
+    #expect(repos.map(\.name) == ["git-sync", "git-sync", "zsh"])
+    #expect(repos[0].state == "build failed")
+    #expect(repos[0].tone == .error)
+    #expect(repos[0].detail == "[this Mac] build: ./build darwin/arm64 in /Users/me/c/git-sync failed: go: not found")
+    #expect(repos[0].retry == nil)
+    #expect(repos[1].detail.hasPrefix("[192.168.1.4] build:"))
+    #expect(repos[1].retry == ["update-mesh"])
+    #expect(IconState(try Snapshot.decode(Data(line.utf8))).problem)
+}
+
+@Test func decodesASnapshotWithoutBuilds() throws {
+    #expect(try decoded().builds == nil)
+}

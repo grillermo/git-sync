@@ -33,8 +33,9 @@ const (
 type Snapshot struct {
 	At       time.Time `json:"at"`
 	Syncing  bool      `json:"syncing"`
-	Problems int       `json:"problems"` // repos with at least one problem
+	Problems int       `json:"problems"` // repos with at least one problem, plus failed builds
 	Repos    []Repo    `json:"repos"`
+	Builds   []Problem `json:"builds"` // machines whose latest build of git-sync failed, newest first
 	Pending  []Pending `json:"pending"`
 	Error    string    `json:"error,omitempty"`
 }
@@ -96,12 +97,19 @@ type channel struct {
 // delivery was queued, so it replaces whatever the channel last reported,
 // and the pending queue reports the out-of-reach machine instead.
 func Build(in Input) Snapshot {
-	snap := Snapshot{At: sec(in.Now), Repos: []Repo{}, Pending: []Pending{}}
+	snap := Snapshot{At: sec(in.Now), Repos: []Repo{}, Builds: []Problem{}, Pending: []Pending{}}
 
 	byChan := map[channel][]int{}
 	lastSync := map[string]time.Time{}
 	lastSeen := map[string]time.Time{}
+	lastBuild := map[string]activity.Event{} // by machine; "" is this one
 	for i, e := range in.Events {
+		if e.Op == activity.OpBuild {
+			// Not a repo's sync, whether or not git-sync is a selected repo:
+			// only each machine's latest build counts.
+			lastBuild[e.Peer] = e
+			continue
+		}
 		if !in.Config.IsSelected(e.Repo) {
 			continue
 		}
@@ -134,6 +142,21 @@ func Build(in Input) Snapshot {
 			})
 		}
 	}
+
+	for _, e := range lastBuild {
+		if e.IsProblem() {
+			snap.Builds = append(snap.Builds, Problem{
+				Time: sec(e.Time), Op: e.Op, Peer: e.Peer, Status: e.Status, Msg: e.Msg,
+			})
+		}
+	}
+	sort.SliceStable(snap.Builds, func(i, j int) bool {
+		if !snap.Builds[i].Time.Equal(snap.Builds[j].Time) {
+			return snap.Builds[i].Time.After(snap.Builds[j].Time)
+		}
+		return snap.Builds[i].Peer < snap.Builds[j].Peer
+	})
+	snap.Problems += len(snap.Builds)
 
 	for _, rel := range in.Config.Repos {
 		r := Repo{Repo: rel, Path: in.Config.RepoPath(rel), Running: []Running{}, Problems: []Problem{}}

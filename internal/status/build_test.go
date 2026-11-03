@@ -257,3 +257,46 @@ func TestTimesAreWholeSeconds(t *testing.T) {
 		t.Errorf("LastSync %v keeps fractional seconds; the Swift decoder rejects them", r.LastSync)
 	}
 }
+
+func buildEv(min int, peer string, st activity.Status, msg string) activity.Event {
+	e := ev(min, activity.BuildRepo, activity.OpBuild, st, msg)
+	e.Peer = peer
+	return e
+}
+
+func TestAFailedBuildIsAProblemEvenWhenGitSyncIsNotASelectedRepo(t *testing.T) {
+	s := build(cfg("a"),
+		buildEv(1, "192.168.1.4", activity.StatusError, "./build darwin/amd64 in /Users/me/c/git-sync failed: go: not found"),
+		buildEv(2, "", activity.StatusError, "./build darwin/arm64 in /Users/me/c/git-sync failed: exit 1"),
+	)
+	if len(s.Builds) != 2 || s.Problems != 2 {
+		t.Fatalf("want both failed builds counted as problems, got %+v", s)
+	}
+	if s.Builds[0].Peer != "" || s.Builds[1].Peer != "192.168.1.4" || !strings.Contains(s.Builds[1].Msg, "go: not found") {
+		t.Errorf("want newest first, with their messages: %+v", s.Builds)
+	}
+	if r := repo(t, s, "a"); r.State != status.StateNever || len(s.Repos) != 1 {
+		t.Errorf("a build must not show up as a repo: %+v", s.Repos)
+	}
+}
+
+func TestALaterBuildOnTheSameMachineClearsAFailedOne(t *testing.T) {
+	s := build(cfg("a"),
+		buildEv(1, "192.168.1.4", activity.StatusError, "failed"),
+		buildEv(2, "192.168.1.1", activity.StatusError, "failed"),
+		buildEv(3, "192.168.1.4", activity.StatusOK, "built"),
+	)
+	if len(s.Builds) != 1 || s.Builds[0].Peer != "192.168.1.1" || s.Problems != 1 {
+		t.Errorf("only 192.168.1.1's build should still be failing: %+v", s.Builds)
+	}
+}
+
+func TestBuildsMarshalsAsAnEmptyList(t *testing.T) {
+	b, err := json.Marshal(build(cfg("a")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"builds":[]`) {
+		t.Errorf("want builds as [], got %s", b)
+	}
+}

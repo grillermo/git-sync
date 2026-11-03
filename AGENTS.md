@@ -288,7 +288,10 @@ Package layering, leaves to composition:
   never cross-compiles; when that build is missing, `placeBinary` runs
   `./build <os>/<arch>` in the peer's own checkout (the same path relative to
   its home, `~/c/git-sync`, with Homebrew's and the usual Go dirs added to
-  PATH) and installs that, and only errors if the peer cannot build either), `repocheck.go` (asks each reachable peer which selected repos it
+  PATH) and installs that, and only errors if the peer cannot build either;
+  every such build is logged as an `OpBuild` event both here, under the
+  peer's name, and in the peer's own activity log, so `git-sync status`
+  reports it in `builds` and the menu bar app on that Mac shows it), `repocheck.go` (asks each reachable peer which selected repos it
   actually has, and whether they point at the same remote — a mismatched
   pair silently never converges otherwise), `clone.go` (`ClonePeerRepos`:
   a repo that check finds *missing* on a peer is cloned there after the

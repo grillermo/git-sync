@@ -8,6 +8,9 @@ public struct Snapshot: Decodable, Sendable, Equatable {
     public var syncing: Bool
     public var problems: Int
     public var repos: [Repo]
+    /// Machines whose latest build of git-sync failed, newest first. Optional
+    /// so a snapshot from a git-sync older than this app still decodes.
+    public var builds: [Problem]?
     public var pending: [Pending]
     public var error: String?
 

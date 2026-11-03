@@ -18,6 +18,7 @@ const (
 	OpNotify   Op = "notify"   // telling the peer over ssh
 	OpReceive  Op = "receive"  // applying what the peer pushed
 	OpActivate Op = "activate" // running a repo's ./activate after a sync
+	OpBuild    Op = "build"    // building git-sync on a peer that had no binary for its platform
 )
 
 // Status is how it turned out.
@@ -30,6 +31,10 @@ const (
 	StatusError   Status = "error"   // it failed
 	StatusOffline Status = "offline" // a machine was out of reach; queued and retried, not a problem
 )
+
+// BuildRepo is the Repo a build event is logged under: it is git-sync being
+// built, and naming it keeps `git-sync report` from showing a nameless repo.
+const BuildRepo = "git-sync"
 
 // Event is one line of activity.jsonl. Keep the json tags short: lines must
 // stay under MaxLineLen for appends to be atomic.

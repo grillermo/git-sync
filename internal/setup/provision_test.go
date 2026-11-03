@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
 	"github.com/grillermo/git-sync/internal/setup"
 	"github.com/grillermo/git-sync/internal/testutil"
@@ -529,6 +530,9 @@ func TestProvisionBuildsOnThePeerWhenThereIsNoLocalBuild(t *testing.T) {
 	if !strings.Contains(calls, "cp /home/peer/c/git-sync/bin/"+build+" /home/peer/.gitsync/bin/git-sync.tmp") {
 		t.Errorf("the peer's build was never installed:\n%s", calls)
 	}
+	if peerLog := sb.SSHStdin(t, "activity.jsonl"); !strings.Contains(peerLog, `"op":"build","status":"ok"`) {
+		t.Errorf("the peer's log should record the build as its own:\n%s", peerLog)
+	}
 }
 
 func TestProvisionNamesTheMissingBuildAndWritesNothingWhenThePeerCannotBuild(t *testing.T) {
@@ -537,7 +541,8 @@ func TestProvisionNamesTheMissingBuildAndWritesNothingWhenThePeerCannotBuild(t *
 	sb.StubSSHScripted(map[string]string{"uname": uname, "$HOME": "/home/peer", "*./build*": "echo 'go: not found' >&2; exit 127"}, 0)
 
 	err := setup.ProvisionPeer(setup.PeerOptions{
-		Cfg:  config.Config{BaseDir: sb.BaseDir, PeerHost: "peer.example", PeerUser: "tester"},
+		Cfg:  config.Config{BaseDir: sb.BaseDir},
+		Peer: config.Peer{Host: "peer.example", User: "tester"},
 		Self: testutil.WriteScript(t, sb, "fake", "#!/bin/sh\n"), Builds: t.TempDir(),
 		SelfHost: "a.local", Out: io.Discard,
 	})
@@ -545,7 +550,19 @@ func TestProvisionNamesTheMissingBuildAndWritesNothingWhenThePeerCannotBuild(t *
 		!strings.Contains(err.Error(), "go: not found") {
 		t.Fatalf("want an error naming %s, ./build and the peer's build output, got %v", build, err)
 	}
-	if strings.Contains(sb.SSHCalls(), "mkdir") {
-		t.Errorf("nothing should be written to the peer:\n%s", sb.SSHCalls())
+	if strings.Contains(sb.SSHCalls(), ".gitsync/bin") {
+		t.Errorf("no binary should be written to the peer:\n%s", sb.SSHCalls())
+	}
+
+	// Both logs say so, for the menu bar app on either machine.
+	peerLog := sb.SSHStdin(t, "activity.jsonl")
+	if !strings.Contains(peerLog, `"op":"build","status":"error"`) || !strings.Contains(peerLog, "go: not found") ||
+		strings.Contains(peerLog, `"peer"`) {
+		t.Errorf("the peer's log should record its own failed build:\n%s", peerLog)
+	}
+	events, _ := activity.Read()
+	if len(events) != 1 || events[0].Op != activity.OpBuild || events[0].Peer != "peer.example" ||
+		events[0].Status != activity.StatusError {
+		t.Errorf("this machine's log should record the peer's failed build: %+v", events)
 	}
 }
