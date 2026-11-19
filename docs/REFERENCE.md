@@ -80,9 +80,9 @@ The wizard runs in four stages: **connect, pick, verify, install**.
   SSH - binary, config (with that peer's own view of the mesh), hooks and
   all - so nothing is typed on any of them.
 
-In the picker, type to filter, `enter` ticks a repo and `tab` moves to the
-Save and Cancel buttons (`enter` runs the focused one). `esc` clears the
-filter, then quits; `ctrl+c` quits at once. Press `q` at the verify screen
+In the picker, `/` filters, `space` ticks a repo, `tab` switches between the
+Save and Cancel buttons and `enter` runs the highlighted one. `esc` leaves the
+filter, then clears it, then quits; `q` and `ctrl+c` quit at once. Press `q` at the verify screen
 to quit. Either way nothing is changed on any machine.
 
 Flags:
