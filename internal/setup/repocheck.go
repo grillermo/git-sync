@@ -169,9 +169,7 @@ func sameRemote(a, b string) bool {
 // fallback - the shell mirror of gitcmd.ResolveRemote.
 func repoCheckScript(peerBase string, repos, remotePrefs []string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\nbase='%s'\nprefs=\"", repoCheckMarker, peerBase)
-	b.WriteString(strings.Join(remotePrefs, " "))
-	b.WriteString("\"\nfor rel in")
+	fmt.Fprintf(&b, "%s\nbase='%s'\nfor rel in", repoCheckMarker, peerBase)
 	for _, rel := range repos {
 		fmt.Fprintf(&b, " '%s'", rel)
 	}
@@ -180,7 +178,7 @@ func repoCheckScript(peerBase string, repos, remotePrefs []string) string {
   if [ ! -e "$d" ]; then echo "missing $rel"; continue; fi
   if [ ! -e "$d/.git" ]; then echo "not-a-repo $rel"; continue; fi
   u=""
-  for r in $prefs; do
+  for r in ` + shellWords(remotePrefs) + `; do
     u=$(git -C "$d" remote get-url "$r" 2>/dev/null) && break
     u=""
   done
@@ -238,4 +236,15 @@ func RenderRepoChecks(w io.Writer, peerHost, peerBase string, checks []RepoCheck
 		"the same relative path, from the same remote; then they sync on the "+
 		"next commit.\n", peerHost, peerBase)
 	return len(bad)
+}
+
+// shellWords writes names as literal words of a for-list. A list held in a
+// variable and expanded unquoted would rely on word splitting, which zsh -
+// the login shell ssh runs this under on a Mac - does not do.
+func shellWords(names []string) string {
+	q := make([]string, len(names))
+	for i, n := range names {
+		q[i] = shellQuote(n)
+	}
+	return strings.Join(q, " ")
 }

@@ -601,8 +601,7 @@ func syncApplyScript(peerBase string, repos, remotePrefs []string) string {
 // tested with -e, not -d: in a worktree or a submodule it is a file.
 func syncScript(peerBase string, repos, remotePrefs []string, act string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\nbase='%s'\nprefs=\"%s\"\nfor rel in",
-		initialSyncMarker, peerBase, strings.Join(remotePrefs, " "))
+	fmt.Fprintf(&b, "%s\nbase='%s'\nfor rel in", initialSyncMarker, peerBase)
 	for _, rel := range repos {
 		fmt.Fprintf(&b, " '%s'", rel)
 	}
@@ -611,7 +610,7 @@ func syncScript(peerBase string, repos, remotePrefs []string, act string) string
   if [ ! -e "$d/.git" ]; then echo "err $rel not a git repo on this machine"; continue; fi
   b=$(git -C "$d" symbolic-ref --short HEAD 2>/dev/null) || { echo "err $rel detached HEAD"; continue; }
   r=""
-  for p in $prefs; do
+  for p in ` + shellWords(remotePrefs) + `; do
     if git -C "$d" remote get-url "$p" >/dev/null 2>&1; then r="$p"; break; fi
   done
   if [ -z "$r" ] && [ "$(git -C "$d" remote | wc -l | tr -d ' ')" = "1" ]; then r=$(git -C "$d" remote); fi
