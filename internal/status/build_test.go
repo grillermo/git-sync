@@ -66,7 +66,9 @@ func TestALaterSuccessOnTheSameChannelClearsAProblem(t *testing.T) {
 }
 
 func TestASuccessOnAnotherChannelDoesNotClearAProblem(t *testing.T) {
-	s := build(cfg("a"),
+	c := cfg("a")
+	c.Peers = []config.Peer{{Host: "mini", User: "u"}, {Host: "laptop", User: "u"}}
+	s := build(c,
 		notify(1, "a", "mini", activity.StatusError, "peer mini receive failed (exit 1)"),
 		ev(2, "a", activity.OpPush, activity.StatusOK, "pushed"),
 		notify(2, "a", "laptop", activity.StatusOK, "peer laptop synced"),
@@ -313,5 +315,18 @@ func TestBuildsMarshalsAsAnEmptyList(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"builds":[]`) {
 		t.Errorf("want builds as [], got %s", b)
+	}
+}
+
+func TestANotifyProblemForAMachineNoLongerInTheMeshIsLeftOut(t *testing.T) {
+	c := cfg("a")
+	c.Peers = []config.Peer{{Host: "192.168.1.1", User: "u"}}
+	s := build(c,
+		notify(1, "a", "macaliada.local", activity.StatusError, "peer macaliada.local unreachable"),
+		notify(2, "a", "192.168.1.1", activity.StatusError, "peer 192.168.1.1 receive failed (exit 1)"),
+	)
+	r := repo(t, s, "a")
+	if len(r.Problems) != 1 || r.Problems[0].Peer != "192.168.1.1" || s.Problems != 1 {
+		t.Errorf("got %+v", r)
 	}
 }

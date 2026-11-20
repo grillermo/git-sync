@@ -103,6 +103,10 @@ func Build(in Input) Snapshot {
 	lastSync := map[string]time.Time{}
 	lastSeen := map[string]time.Time{}
 	lastBuild := map[string]activity.Event{} // by machine; "" is this one
+	inMesh := map[string]bool{}
+	for _, p := range in.Config.PeerList() {
+		inMesh[p.Host] = true
+	}
 	for i, e := range in.Events {
 		if e.Op == activity.OpBuild {
 			// Not a repo's sync, whether or not git-sync is a selected repo:
@@ -111,6 +115,11 @@ func Build(in Input) Snapshot {
 			continue
 		}
 		if !in.Config.IsSelected(e.Repo) {
+			continue
+		}
+		if e.Op == activity.OpNotify && !inMesh[e.Peer] {
+			// A machine taken out of the mesh is never notified again, so
+			// nothing could ever clear its channel's last error.
 			continue
 		}
 		if e.Time.After(lastSeen[e.Repo]) {
@@ -197,10 +206,6 @@ func Build(in Input) Snapshot {
 		return a.Repo < b.Repo
 	})
 
-	inMesh := map[string]bool{}
-	for _, p := range in.Config.PeerList() {
-		inMesh[p.Host] = true
-	}
 	for _, p := range in.Pending {
 		if !in.Config.IsSelected(p.Rel) || (p.Kind == "notify" && !inMesh[p.Host]) {
 			continue // the next retry drops it
