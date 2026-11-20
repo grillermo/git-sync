@@ -125,6 +125,12 @@ func Build(in Input) Snapshot {
 			}
 		}
 		k := channel{e.Repo, e.Op, e.Peer}
+		if e.Op == activity.OpReceive {
+			// A repo has one receive channel. Receives name no peer; only
+			// `unlock`'s warning does (the lock's holder), and keyed apart
+			// it would never be cleared.
+			k.peer = ""
+		}
 		byChan[k] = append(byChan[k], i)
 	}
 

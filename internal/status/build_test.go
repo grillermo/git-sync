@@ -152,6 +152,21 @@ func TestANewReceiveRunClearsTheLastRunsWarning(t *testing.T) {
 	}
 }
 
+// `unlock` logs its warning under the machine that held the lock, but no
+// receive names a peer, so keyed by peer that warning sat on a channel of its
+// own that nothing ever cleared.
+func TestTheNextReceiveClearsALockClearedByHand(t *testing.T) {
+	cleared := ev(1, "a", activity.OpReceive, activity.StatusWarn, "lock cleared by hand")
+	cleared.Peer = "the remote (startup catch-up)"
+	r := repo(t, build(cfg("a"),
+		cleared,
+		receiveRun(5, "r2", activity.StatusOK, "fast-forwarded main from origin"),
+	), "a")
+	if r.State != status.StateOK || len(r.Problems) != 0 {
+		t.Errorf("got %+v", r)
+	}
+}
+
 func TestRunningMakesARepoSyncingAndKeepsItsProblems(t *testing.T) {
 	s := status.Build(status.Input{
 		Config:  cfg("a"),
