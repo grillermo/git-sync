@@ -83,7 +83,15 @@ func pushRepo(cfg config.Config, rel string) map[string]bool {
 	// Offline: remember it, and the next sync run of any repo here pushes it.
 	// Rejected: no retry - a rejection needs a human, and the next commit in
 	// this repo tries again anyway.
-	if _, err := gitcmd.Push(dir, remote, branch); err != nil {
+	//
+	// The one rejection worth a second try is a ref race: commits seconds
+	// apart start overlapping pushes of the same branch, and the remote turns
+	// the slower one away even though it now holds that push's commit too.
+	_, err = gitcmd.Push(dir, remote, branch)
+	if gitcmd.IsRefRace(err) {
+		_, err = gitcmd.Push(dir, remote, branch)
+	}
+	if err != nil {
 		msg := "push to " + remote + " failed: " + gitcmd.Summary(err)
 		st := activity.StatusError
 		if gitcmd.IsOffline(err) {

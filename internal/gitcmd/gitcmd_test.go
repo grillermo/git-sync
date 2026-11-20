@@ -312,6 +312,25 @@ func TestSummaryKeepsALineOneDiagnosisEvenWhenALaterLineMatches(t *testing.T) {
 	}
 }
 
+func TestIsRefRaceOnlyMatchesALostRefUpdate(t *testing.T) {
+	race := "git push github main: exit status 1: ! [remote rejected] main -> main (cannot lock ref 'refs/heads/main': is at 5f8012aa but expected 8ff8fd3a)"
+	if !gitcmd.IsRefRace(errors.New(race)) {
+		t.Errorf("IsRefRace(%q) = false", race)
+	}
+	for _, msg := range []string{
+		"! [rejected] main -> main (non-fast-forward)",
+		"! [rejected] main -> main (fetch first)",
+		"ssh: connect to host github.com port 22: Operation timed out",
+	} {
+		if gitcmd.IsRefRace(errors.New(msg)) {
+			t.Errorf("IsRefRace(%q) = true", msg)
+		}
+	}
+	if gitcmd.IsRefRace(nil) {
+		t.Error("IsRefRace(nil) = true")
+	}
+}
+
 func TestIsOfflineTellsUnreachableFromRefused(t *testing.T) {
 	for _, msg := range []string{
 		"git push origin main: exit status 128: fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com",

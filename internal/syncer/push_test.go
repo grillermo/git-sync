@@ -1,6 +1,7 @@
 package syncer_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -51,6 +52,45 @@ func TestPushDoesNotNotifyWhenThePushFails(t *testing.T) {
 		t.Error("must not notify the peer after a failed push")
 	}
 	testutil.AssertEvent(t, activity.OpPush, activity.StatusError, "")
+}
+
+// Two commits a few seconds apart start two background pushes of the same
+// branch. The remote takes one and turns the other away with "cannot lock
+// ref ... is at X but expected Y", although what it holds now already has the
+// loser's commit. That is not a rejection a human has to look at: push again,
+// and if the remote has everything, tell the peers as usual.
+func TestPushRetriesWhenAnotherPushMovedTheRefMidway(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.StubSSH(0)
+	testutil.Commit(t, sb, repo, "local change")
+
+	// The "other push": the commit is already on the remote under another
+	// name, and the remote's pre-receive hook moves main onto it the first
+	// time it runs, after our push has read main's old value.
+	origin := filepath.Join(sb.Home, "remotes", "group/proj.git")
+	sb.Git(repo, "push", "-q", "origin", "main:refs/heads/racer")
+	hooks := filepath.Join(origin, "hooks")
+	sb.Git(origin, "config", "core.hooksPath", hooks)
+	testutil.WriteFileIn(t, hooks, "pre-receive", `#!/bin/sh
+cat >/dev/null
+[ -e raced ] && exit 0
+touch raced
+env -u GIT_QUARANTINE_PATH git update-ref refs/heads/main refs/heads/racer
+`)
+	if err := os.Chmod(filepath.Join(hooks, "pre-receive"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Fatalf("Push returned %d, want 0", code)
+	}
+	if _, err := os.Stat(filepath.Join(origin, "raced")); err != nil {
+		t.Fatal("the race never happened, so the test proves nothing")
+	}
+	testutil.AssertEvent(t, activity.OpPush, activity.StatusOK, "")
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOK, "")
 }
 
 func TestPushRecordsAPeerWithoutTheRepoAsASkip(t *testing.T) {

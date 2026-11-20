@@ -106,6 +106,15 @@ func IsOffline(err error) bool {
 	return false
 }
 
+// IsRefRace reports whether a push was turned away because another push
+// moved the same ref between the remote advertising it and updating it
+// ("cannot lock ref ... is at X but expected Y"). That is not a judgement
+// about the commits, only bad timing, so pushing again settles it: it either
+// goes through, finds the remote already up to date, or meets a real refusal.
+func IsRefRace(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "cannot lock ref")
+}
+
 // diagnosticMarkers are the prefixes git puts on the lines that say what went
 // wrong. "To " is absent on purpose: it introduces the push transport banner,
 // which is noise, and is skipped by simply never matching.
