@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/grillermo/git-sync/internal/activity"
@@ -113,6 +114,27 @@ func IsOffline(err error) bool {
 // goes through, finds the remote already up to date, or meets a real refusal.
 func IsRefRace(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "cannot lock ref")
+}
+
+var raceWinner = regexp.MustCompile(`cannot lock ref '[^']*': is at ([0-9a-f]{7,64}) but expected`)
+
+// RaceWinner returns the commit a lost ref race says the remote is at now
+// ("is at X but expected Y"), or "" when err is not such a race.
+func RaceWinner(err error) string {
+	if err == nil {
+		return ""
+	}
+	if m := raceWinner.FindStringSubmatch(err.Error()); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// Contains reports whether commit already has rev in its history. A commit
+// this clone has never seen contains nothing, as far as it can tell.
+func Contains(dir, commit, rev string) bool {
+	_, err := Run(dir, "merge-base", "--is-ancestor", rev, commit)
+	return err == nil
 }
 
 // diagnosticMarkers are the prefixes git puts on the lines that say what went

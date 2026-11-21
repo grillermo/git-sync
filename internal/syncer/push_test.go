@@ -2,6 +2,7 @@ package syncer_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -322,4 +323,74 @@ func TestPushRecordsAPeerThatCouldNotFetchAsOffline(t *testing.T) {
 
 	syncer.Push("group/proj")
 	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOffline, "could not fetch")
+}
+
+// stubRacingPush puts a git on PATH whose every push loses a ref race to
+// winner - the way GitHub keeps answering while its advertised ref lags the
+// one another overlapping push just wrote. Everything else is real git.
+// Returns a func reporting how many pushes were attempted.
+func stubRacingPush(t *testing.T, sb *testutil.Sandbox, winner string) func() int {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(sb.Home, "gitbin")
+	log := filepath.Join(sb.Home, "pushes.log")
+	testutil.WriteFileIn(t, bin, "git", `#!/bin/sh
+if [ "$1" = push ]; then
+  echo push >> '`+log+`'
+  echo " ! [remote rejected] main -> main (cannot lock ref 'refs/heads/main': is at `+winner+` but expected 1111111111111111111111111111111111111111)" >&2
+  exit 1
+fi
+exec '`+realGit+`' "$@"
+`)
+	if err := os.Chmod(filepath.Join(bin, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() int {
+		b, _ := os.ReadFile(log)
+		return strings.Count(string(b), "push")
+	}
+}
+
+// Four commits in three seconds start four overlapping pushes. The one that
+// loses the race is told the remote "is at" a commit that already holds its
+// own HEAD: nothing is left to deliver, so it is a push, and the peers hear.
+func TestALostRefRaceWhoseWinnerHoldsHEADIsAPush(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.StubSSH(0)
+	testutil.Commit(t, sb, repo, "local change")
+	head := strings.TrimSpace(sb.Git(repo, "rev-parse", "HEAD"))
+	pushes := stubRacingPush(t, sb, head)
+
+	if code := syncer.Push("group/proj"); code != 0 {
+		t.Fatalf("Push returned %d, want 0", code)
+	}
+	testutil.AssertEvent(t, activity.OpPush, activity.StatusOK, "")
+	testutil.AssertEvent(t, activity.OpNotify, activity.StatusOK, "")
+	if n := pushes(); n != 1 {
+		t.Errorf("pushed %d times, want 1: the winner already had everything", n)
+	}
+}
+
+// A race the remote keeps losing to a commit we do not have is retried a
+// bounded number of times, then reported - never looped on forever.
+func TestARefRaceToAnUnknownCommitGivesUpAfterAFewTries(t *testing.T) {
+	sb := testutil.NewSandbox(t)
+	repo := sb.MakeRepo("group/proj")
+	testutil.SaveConfig(t, sb, "peer.example", "tester")
+	sb.StubSSH(0)
+	testutil.Commit(t, sb, repo, "local change")
+	pushes := stubRacingPush(t, sb, "2222222222222222222222222222222222222222")
+	defer syncer.SetRefRaceBackoff(0)()
+
+	syncer.Push("group/proj")
+	testutil.AssertEvent(t, activity.OpPush, activity.StatusError, "cannot lock ref")
+	if n := pushes(); n < 3 || n > 6 {
+		t.Errorf("pushed %d times, want a few retries", n)
+	}
 }

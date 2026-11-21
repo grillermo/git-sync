@@ -355,3 +355,15 @@ func TestIsOfflineTellsUnreachableFromRefused(t *testing.T) {
 		t.Error("IsOffline(nil) = true")
 	}
 }
+
+func TestRaceWinnerReadsWhereTheRemoteIsNow(t *testing.T) {
+	race := errors.New("git push github main: exit status 1: ! [remote rejected] main -> main (cannot lock ref 'refs/heads/main': is at d66bcc27848ab546bef93e2f06a1e4d22d8fa3ff but expected 124621ed87bf9c35a538bd823192700b1422d8cb)")
+	if got := gitcmd.RaceWinner(race); got != "d66bcc27848ab546bef93e2f06a1e4d22d8fa3ff" {
+		t.Errorf("RaceWinner = %q", got)
+	}
+	for _, err := range []error{nil, errors.New("! [rejected] main -> main (fetch first)")} {
+		if got := gitcmd.RaceWinner(err); got != "" {
+			t.Errorf("RaceWinner(%v) = %q, want \"\"", err, got)
+		}
+	}
+}

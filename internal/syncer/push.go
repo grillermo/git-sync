@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/grillermo/git-sync/internal/activity"
 	"github.com/grillermo/git-sync/internal/config"
@@ -84,13 +85,8 @@ func pushRepo(cfg config.Config, rel string) map[string]bool {
 	// Rejected: no retry - a rejection needs a human, and the next commit in
 	// this repo tries again anyway.
 	//
-	// The one rejection worth a second try is a ref race: commits seconds
-	// apart start overlapping pushes of the same branch, and the remote turns
-	// the slower one away even though it now holds that push's commit too.
-	_, err = gitcmd.Push(dir, remote, branch)
-	if gitcmd.IsRefRace(err) {
-		_, err = gitcmd.Push(dir, remote, branch)
-	}
+	// The one rejection worth more tries is a ref race, see pushThroughRaces.
+	err = pushThroughRaces(dir, remote, branch)
 	if err != nil {
 		msg := "push to " + remote + " failed: " + gitcmd.Summary(err)
 		st := activity.StatusError
@@ -213,4 +209,33 @@ func exitCode(err error) int {
 		return ee.ExitCode()
 	}
 	return -1
+}
+
+// refRaceRetries and refRaceBackoff bound pushThroughRaces: a few tries, each
+// waiting a little longer, so the remote's advertised ref can catch up.
+const refRaceRetries = 4
+
+var refRaceBackoff = time.Second
+
+// pushThroughRaces pushes branch, riding out ref races. Commits seconds apart
+// start overlapping pushes of the same branch, and the remote turns the
+// slower one away ("cannot lock ref ... is at X but expected Y") although X
+// may already hold that push's commit. Pushing again right away is not
+// enough: GitHub can keep advertising the old value for a moment, so the
+// retry loses the same race. When X holds HEAD, everything this push carried
+// is on the remote and it counts as pushed; otherwise retry with a growing
+// pause, and report the race if it never settles.
+func pushThroughRaces(dir, remote, branch string) error {
+	_, err := gitcmd.Push(dir, remote, branch)
+	for try := 1; gitcmd.IsRefRace(err); try++ {
+		if w := gitcmd.RaceWinner(err); w != "" && gitcmd.Contains(dir, w, "HEAD") {
+			return nil
+		}
+		if try > refRaceRetries {
+			break
+		}
+		time.Sleep(refRaceBackoff * time.Duration(try))
+		_, err = gitcmd.Push(dir, remote, branch)
+	}
+	return err
 }
